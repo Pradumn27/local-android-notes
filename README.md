@@ -34,52 +34,64 @@ Use it if you live in Apple Notes on a Mac and want the same folders and notes o
 
 The first time the helper runs, macOS will ask whether Terminal / Python may control Notes. Click **OK**. If the Mac firewall asks about incoming connections, allow it.
 
-## 1. Choose a PIN and start the Mac helper
+## 1. Choose a PIN and install the Mac helper
 
-The PIN is not random-forever unless you want it to be. You pick it.
+The Mac helper must stay running or the phone cannot sync. Do **not** leave it in a terminal window. Install it as a login item so it starts at login, lives in the background, and restarts if it dies.
 
 ```bash
 cd mac-companion
-chmod +x start.sh
+chmod +x start.sh install-login-item.sh uninstall-login-item.sh
 
 # Pick a PIN you will type on the phone (4–8 digits)
 ./start.sh --pin 482916
 ```
 
-The window prints something like:
+That first command prints the PIN and starts a one-off copy. Stop it with Ctrl+C, then:
+
+```bash
+./install-login-item.sh
+```
+
+You can close every terminal after that. The helper is now a macOS LaunchAgent (`com.localnotes.bridge`).
+
+It will print something like:
 
 ```
-  Device : Pradumn’s MacBook Air
+  Device : Jane’s MacBook Air
   Address: http://192.168.1.102:18765
   PIN    : 482916
 ```
 
-**Keep that window open** while you use the phone.
+The same PIN is stored in `~/.local-notes-bridge.json`. Check the live log anytime:
+
+```bash
+tail -f ~/Library/Logs/local-notes-bridge.log
+```
 
 ### Other ways to set the PIN
 
 | How | Example |
 |---|---|
-| Flag (saved for next launch) | `./start.sh --pin 482916` |
+| Flag (saved for next launch) | `./start.sh --pin 482916` then `./install-login-item.sh` |
 | Environment variable | `NOTES_BRIDGE_PIN=482916 ./start.sh` |
 | Edit the saved file | `~/.local-notes-bridge.json` → `"pin": "482916"` |
-| New random PIN | `./start.sh --new-pin` |
+| New random PIN | `./start.sh --new-pin` then `./install-login-item.sh` |
 
-The PIN and a pairing token live only on your Mac in `~/.local-notes-bridge.json` (mode `600`). Changing the PIN does not wipe notes. The phone must type the current PIN once if the token was never stored, or if you deleted that file.
+The PIN and a pairing token live only on your Mac in `~/.local-notes-bridge.json` (mode `600`). Changing the PIN does not wipe notes. After you change it, run `./install-login-item.sh` again so the background copy picks it up. The phone must type the current PIN once if it has never paired, or if you deleted that file.
 
-To run the helper **always** (no terminal window, starts at login, restarts if it dies):
+### Stop or remove the helper
 
 ```bash
 cd mac-companion
-./install-login-item.sh
+./uninstall-login-item.sh
 ```
 
-You can close every terminal after that. Check `~/Library/Logs/local-notes-bridge.log` if something looks off.
+That unloads the login item and stops the process. Your PIN file is left in place.
 
-Stop it:
+To run it once in a terminal instead (stops when the window closes):
 
 ```bash
-launchctl bootout gui/$(id -u)/com.localnotes.bridge
+./start.sh --pin 482916
 ```
 
 ## 2. Install the Android app
@@ -168,17 +180,19 @@ Last write wins if you type in the same note on both devices at once.
 ## Project layout
 
 ```
-app/                  Android app (Kotlin, Jetpack Compose, Room)
+app/                         Android app (Kotlin, Jetpack Compose, Room)
 mac-companion/
-  notes_bridge.py     Mac helper (Python 3, stdlib only)
-  jxa/notes_ops.js    Talks to Notes.app
-  start.sh            Convenience launcher
+  notes_bridge.py            Mac helper (Python 3, stdlib only)
+  jxa/notes_ops.js           Talks to Notes.app
+  start.sh                   One-off run in a terminal
+  install-login-item.sh      Keep it running in the background
+  uninstall-login-item.sh    Stop it and remove the login item
 ```
 
 ## Troubleshooting
 
 **Phone cannot find the Mac**  
-Same Wi-Fi? Helper window still open? Type the printed address by hand. Allow Python incoming connections in System Settings → Network → Firewall.
+Same Wi-Fi? Helper installed and running? Check with `lsof -nP -iTCP:18765 -sTCP:LISTEN` or `tail ~/Library/Logs/local-notes-bridge.log`. Type the printed address by hand. Allow Python incoming connections in System Settings → Network → Firewall.
 
 **“Enter the PIN again”**  
 You deleted `~/.local-notes-bridge.json` or started with `--new-pin`. Type the new PIN on the phone.
@@ -196,7 +210,7 @@ Live widgets are off, or notifications were denied. Folders → gear → Enable 
 Turn live widgets on (notifications allowed) and set **Settings → Apps → Notes → Battery → Unrestricted**. The helper must still be running on the Mac. The phone now reconnects when Wi-Fi returns and pulls whatever changed while you were gone.
 
 **Notes.app did not update from the phone**  
-The helper must be running. Check the terminal still shows the PIN banner.
+The helper must be running in the background. If you only used `./start.sh`, closing the terminal stopped it. Run `./install-login-item.sh` and confirm the log still has the PIN banner.
 
 ## License
 

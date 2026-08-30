@@ -526,12 +526,19 @@ def main() -> int:
     print(f"  PIN    : {STATE.pin}")
     print()
     print("  This PIN is yours. Type it on the phone under Folders → gear.")
-    print("  Change it anytime:")
+    print("  Change it anytime, then reinstall the login item:")
     print("      python3 notes_bridge.py --pin 482916")
+    print("      ./install-login-item.sh")
     print("  Or set NOTES_BRIDGE_PIN. It is stored in ~/.local-notes-bridge.json")
     print()
-    print("  Keep this window open (or install the login item it wrote).")
-    print("  Press Ctrl+C to stop.")
+    if os.environ.get("LAUNCHED_BY_LAUNCHD"):
+        print("  Running in the background via launchd. Close the terminal.")
+        print("  Log: ~/Library/Logs/local-notes-bridge.log")
+        print("  Stop: ./uninstall-login-item.sh")
+    else:
+        print("  This is a one-off terminal run. Closing this window stops sync.")
+        print("  To keep it running after you log out or close the terminal:")
+        print("      ./install-login-item.sh")
     print()
     try:
         server.serve_forever()
