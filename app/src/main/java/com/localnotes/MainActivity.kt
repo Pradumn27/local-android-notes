@@ -50,11 +50,16 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class WidgetLaunch(val noteId: String?, val folderId: String?)
+private data class WidgetLaunch(
+    val noteId: String?,
+    val folderId: String?,
+    val token: Long = 0L,
+)
 
 private fun Intent.toWidgetLaunch(): WidgetLaunch {
     return WidgetLaunch(
-        noteId = getStringExtra(WidgetIntents.EXTRA_NOTE_ID),
-        folderId = getStringExtra(WidgetIntents.EXTRA_FOLDER_ID),
+        noteId = WidgetIntents.readNoteId(this),
+        folderId = WidgetIntents.readFolderId(this),
+        token = System.currentTimeMillis(),
     )
 }

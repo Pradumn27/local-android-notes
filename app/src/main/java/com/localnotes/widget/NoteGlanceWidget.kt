@@ -13,7 +13,6 @@ import androidx.glance.LocalContext
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
-import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.itemsIndexed
@@ -65,18 +64,20 @@ private fun NoteWidgetContent(
     lines: List<AppleNotesHtml.DisplayLine>,
 ) {
     val context = LocalContext.current
+    val open = note?.let { WidgetIntents.openNoteAction(context, it.id) }
     Column(
         modifier = GlanceModifier
             .fillMaxSize()
             .cornerRadius(20.dp)
             .background(ColorProvider(day = Color(0xFFFFFFF8), night = Color(0xFF1C1C1E)))
-            .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 8.dp),
+            .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 8.dp)
+            .let { base -> if (open != null) base.clickable(onClick = open) else base },
         verticalAlignment = Alignment.Top,
         horizontalAlignment = Alignment.Start,
     ) {
         val header = GlanceModifier.fillMaxWidth().let { base ->
-            if (note != null) {
-                base.clickable(onClick = actionStartActivity(WidgetIntents.openNote(context, note.id)))
+            if (open != null) {
+                base.clickable(onClick = open)
             } else {
                 base
             }
@@ -110,7 +111,7 @@ private fun NoteWidgetContent(
                 )
             }
         }
-        if (note != null && lines.isNotEmpty()) {
+        if (note != null && open != null && lines.isNotEmpty()) {
             Spacer(GlanceModifier.height(8.dp))
             LazyColumn(modifier = GlanceModifier.fillMaxSize()) {
                 itemsIndexed(lines, itemId = { index, line -> (index.toLong() shl 16) xor line.text.hashCode().toLong() }) { _, line ->
@@ -137,7 +138,7 @@ private fun NoteWidgetContent(
                         modifier = GlanceModifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
-                            .clickable(onClick = actionStartActivity(WidgetIntents.openNote(context, note.id))),
+                            .clickable(onClick = open),
                     )
                 }
             }

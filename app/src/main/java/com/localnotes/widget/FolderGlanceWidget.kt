@@ -12,7 +12,6 @@ import androidx.glance.LocalContext
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
-import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.items
@@ -88,7 +87,7 @@ private fun FolderWidgetContent(
     ) {
         val header = GlanceModifier.fillMaxWidth().let { base ->
             if (folderId != null) {
-                base.clickable(onClick = actionStartActivity(WidgetIntents.openFolder(context, folderId)))
+                base.clickable(onClick = WidgetIntents.openFolderAction(context, folderId))
             } else {
                 base
             }
@@ -127,7 +126,7 @@ private fun FolderWidgetContent(
                         modifier = GlanceModifier
                             .fillMaxWidth()
                             .padding(vertical = 6.dp)
-                            .clickable(onClick = actionStartActivity(WidgetIntents.openNote(context, note.id))),
+                            .clickable(onClick = WidgetIntents.openNoteAction(context, note.id)),
                     ) {
                         Text(
                             text = note.title.ifBlank { "New Note" },
