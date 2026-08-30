@@ -223,6 +223,7 @@ private fun EditorSlot(
         onRestore = { viewModel.restoreNote(it.id) },
         onPermanentDelete = { viewModel.permanentlyDelete(it.id) },
         onMove = { viewModel.openDialog(DialogKind.MOVE_NOTE) },
+        onOpenNote = viewModel::openLinkedNote,
         modifier = modifier,
     )
 }

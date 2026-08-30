@@ -60,6 +60,7 @@ fun EditorPane(
     onRestore: (NoteDetail) -> Unit,
     onPermanentDelete: (NoteDetail) -> Unit,
     onMove: (NoteDetail) -> Unit,
+    onOpenNote: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalNotesColors.current
@@ -86,6 +87,51 @@ fun EditorPane(
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val context = LocalContext.current
     val isTrash = note.deletedAt != null || folderKind == FolderKind.RECENTLY_DELETED
+    fun insertMedia(type: BlockType, src: String, mime: String) {
+        val item = NoteBlock(
+            id = java.util.UUID.randomUUID().toString(),
+            type = type,
+            text = src,
+            mime = mime,
+        )
+        val (next, id) = insertAfter(blocks, focusedId, item)
+        focusedId = id
+        lastEditAt = System.currentTimeMillis()
+        blocks = next
+        onBlocks(note.id, next)
+    }
+    val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@rememberLauncherForActivityResult
+        val jpeg = compressJpeg(bytes)
+        val src = "data:image/jpeg;base64," + android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
+        insertMedia(BlockType.IMAGE, src, "image/jpeg")
+    }
+    val pickAudio = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val picked = readPickedFile(context, uri, "audio/mp4") ?: return@rememberLauncherForActivityResult
+        insertMedia(BlockType.AUDIO, picked.first, picked.second)
+    }
+    val pickFile = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val picked = readPickedFile(context, uri, "application/octet-stream") ?: return@rememberLauncherForActivityResult
+        val mime = picked.second
+        if (mime.startsWith("image/")) {
+            val jpeg = compressJpeg(android.util.Base64.decode(picked.first.substringAfter("base64,"), android.util.Base64.DEFAULT))
+            val src = "data:image/jpeg;base64," + android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
+            insertMedia(BlockType.IMAGE, src, "image/jpeg")
+        } else if (mime.startsWith("audio/")) {
+            insertMedia(BlockType.AUDIO, picked.first, mime)
+        } else {
+            insertMedia(BlockType.FILE, picked.first, mime)
+        }
+    }
 
     LaunchedEffect(note.html, note.modifiedAt) {
         if (System.currentTimeMillis() - lastEditAt < 1500) return@LaunchedEffect
@@ -188,15 +234,101 @@ fun EditorPane(
                 onMark = { mark ->
                     commit(toggleMark(blocks, focusedId, mark, selection.first, selection.second))
                 },
-                onOpenLink = { href -> runCatching { uriHandler.openUri(href) } },
+                onOpenLink = { href ->
+                    val localTitle = href.removePrefix("notes://").removePrefix(">>").trim()
+                    val local = if (href.startsWith("http")) {
+                        null
+                    } else {
+                        blocks.firstOrNull { it.text.equals(localTitle, true) }
+                    }
+                    when {
+                        local != null -> focusedId = local.id
+                        href.startsWith("notes://") || href.startsWith("x-coredata:") || href.startsWith(">>") ->
+                            onOpenNote(href)
+                        else -> runCatching { uriHandler.openUri(href) }
+                    }
+                },
                 onChecklist = {
                     val (next, id) = insertChecklist(blocks, focusedId)
                     focusedId = id
                     commit(next)
                 },
+                onAlign = { align ->
+                    commit(blocks.map { if (it.id == focusedId) it.copy(align = align) else it })
+                },
+                onColor = { hex ->
+                    commit(applyColor(blocks, focusedId, hex, selection.first, selection.second))
+                },
+                onHighlight = { hex ->
+                    commit(applyHighlight(blocks, focusedId, hex, selection.first, selection.second))
+                },
+                onSize = { size ->
+                    commit(applyFontSize(blocks, focusedId, size, selection.first, selection.second))
+                },
+                onIndent = { delta ->
+                    commit(blocks.map {
+                        if (it.id == focusedId) it.copy(indent = (it.indent + delta).coerceIn(0, 6)) else it
+                    })
+                },
+                onTable = {
+                    val item = NoteBlock(java.util.UUID.randomUUID().toString(), BlockType.TABLE, "", tableRows = listOf(listOf("", ""), listOf("", "")))
+                    val (next, id) = insertAfter(blocks, focusedId, item)
+                    focusedId = id
+                    commit(next)
+                },
+                onImage = { pickImage.launch("image/*") },
+                onAudio = { pickAudio.launch("audio/*") },
+                onFile = { pickFile.launch("*/*") },
+                onDivider = {
+                    val item = NoteBlock(java.util.UUID.randomUUID().toString(), BlockType.DIVIDER, "")
+                    val (next, id) = insertAfter(blocks, focusedId, item)
+                    focusedId = id
+                    commit(next)
+                },
+                onCollapse = {
+                    commit(blocks.map { if (it.id == focusedId) it.copy(collapsed = !it.collapsed) else it })
+                },
             )
         }
     }
+}
+
+private fun readPickedFile(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    fallbackMime: String,
+): Pair<String, String>? {
+    val mime = context.contentResolver.getType(uri)?.ifBlank { null } ?: fallbackMime
+    val name = runCatching {
+        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+            }
+    }.getOrNull()
+    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    if (bytes.size > 6 * 1024 * 1024) return null
+    val src = "data:$mime;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+    val labeled = if (!name.isNullOrBlank()) "$mime|$name" else mime
+    return src to labeled
+}
+
+private fun compressJpeg(bytes: ByteArray): ByteArray {
+    val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
+    val scale = 1280f / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+    val scaled = if (scale < 1f) {
+        android.graphics.Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1),
+            true,
+        )
+    } else {
+        bitmap
+    }
+    val out = java.io.ByteArrayOutputStream()
+    scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
+    return out.toByteArray()
 }
 
 @Composable

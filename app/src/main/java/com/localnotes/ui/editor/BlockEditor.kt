@@ -3,10 +3,13 @@ package com.localnotes.ui.editor
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,6 +39,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -66,7 +70,9 @@ fun BlockEditor(
 ) {
     val colors = LocalNotesColors.current
     Column(modifier = modifier.fillMaxWidth()) {
+        val hidden = collapsedHiddenIds(blocks)
         blocks.forEachIndexed { index, block ->
+            if (block.id in hidden) return@forEachIndexed
             BlockRow(
                 block = block,
                 index = index,
@@ -82,6 +88,20 @@ fun BlockEditor(
                 onSelection = onSelection,
                 onChecked = { checked ->
                     onChange(blocks.update(index) { it.copy(checked = checked) })
+                },
+                onToggleCollapse = {
+                    onChange(blocks.update(index) { it.copy(collapsed = !it.collapsed) })
+                },
+                onTableChange = { rows ->
+                    onChange(blocks.update(index) { it.copy(tableRows = rows) })
+                },
+                onRemove = {
+                    val next = blocks.toMutableList().also { it.removeAt(index) }
+                    onChange(
+                        next.ifEmpty {
+                            listOf(NoteBlock(UUID.randomUUID().toString(), BlockType.TITLE, ""))
+                        },
+                    )
                 },
                 onSplit = { before, after ->
                     val first = block.copy(
@@ -134,6 +154,9 @@ private fun BlockRow(
     onChecked: (Boolean) -> Unit,
     onSplit: (String, String) -> Unit,
     onBackspaceEmpty: () -> Unit,
+    onToggleCollapse: () -> Unit,
+    onTableChange: (List<List<String>>) -> Unit,
+    onRemove: () -> Unit,
 ) {
     val colors = LocalNotesColors.current
     val focusRequester = remember { FocusRequester() }
@@ -151,12 +174,32 @@ private fun BlockRow(
         }
     }
 
+    val align = when (block.align) {
+        com.localnotes.data.model.BlockAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        com.localnotes.data.model.BlockAlign.END -> androidx.compose.ui.text.style.TextAlign.End
+        else -> androidx.compose.ui.text.style.TextAlign.Start
+    }
     val style = blockTextStyle(block.type).copy(
         color = if (block.type == BlockType.CHECKLIST && block.checked) colors.secondary else colors.label,
         textDecoration = if (block.checked) TextDecoration.LineThrough else TextDecoration.None,
+        textAlign = align,
     )
     val annotated = remember(block.text, block.marks, block.checked, colors.isDark) {
         block.toAnnotated(style, colors)
+    }
+
+    if (block.type == BlockType.TABLE || block.type == BlockType.IMAGE ||
+        block.type == BlockType.AUDIO || block.type == BlockType.FILE ||
+        block.type == BlockType.DIVIDER
+    ) {
+        SpecialBlock(
+            block = block,
+            readOnly = readOnly,
+            onFocused = { onFocused(true) },
+            onTableChange = onTableChange,
+            onRemove = onRemove,
+        )
+        return
     }
 
     Row(
@@ -165,6 +208,16 @@ private fun BlockRow(
             .padding(vertical = blockVertical(block.type)),
         verticalAlignment = Alignment.Top,
     ) {
+        if (block.type == BlockType.TITLE || block.type == BlockType.HEADING || block.type == BlockType.SUBHEADING) {
+            Text(
+                if (block.collapsed) "▶" else "▼",
+                color = colors.tertiary,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .padding(top = 8.dp, end = 8.dp)
+                    .clickable(onClick = onToggleCollapse),
+            )
+        }
         when (block.type) {
             BlockType.CHECKLIST -> {
                 Box(
@@ -254,11 +307,218 @@ private fun BlockRow(
     }
 }
 
+@Composable
+private fun SpecialBlock(
+    block: NoteBlock,
+    readOnly: Boolean,
+    onFocused: () -> Unit,
+    onTableChange: (List<List<String>>) -> Unit,
+    onRemove: () -> Unit,
+) {
+    val colors = LocalNotesColors.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Column(Modifier.fillMaxWidth()) {
+        when (block.type) {
+            BlockType.DIVIDER -> {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp)
+                        .height(1.dp)
+                        .background(colors.separator)
+                        .clickable(onClick = onFocused),
+                )
+            }
+            BlockType.IMAGE -> {
+                val bitmap = remember(block.text) { decodeDataImage(block.text) }
+                if (bitmap != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = bitmap,
+                        contentDescription = block.mime ?: "image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .clickable(onClick = onFocused),
+                    )
+                } else {
+                    Text("Image", color = colors.secondary, modifier = Modifier.padding(vertical = 8.dp))
+                }
+            }
+            BlockType.AUDIO -> {
+                Text(
+                    "▶  Audio",
+                    color = colors.gold,
+                    modifier = Modifier
+                        .padding(vertical = 8.dp)
+                        .clickable {
+                            onFocused()
+                            runCatching { playDataAudio(context, block.text) }
+                        },
+                )
+            }
+            BlockType.FILE -> {
+                val name = block.mime?.substringAfter('|')?.ifBlank { null } ?: "File"
+                Text(
+                    "⤓  $name",
+                    color = colors.link,
+                    modifier = Modifier
+                        .padding(vertical = 8.dp)
+                        .clickable {
+                            onFocused()
+                            runCatching { openDataFile(context, block.text, block.mime) }
+                        },
+                )
+            }
+            BlockType.TABLE -> {
+                val rows = block.tableRows.ifEmpty { listOf(listOf("", "")) }
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .border(0.5.dp, colors.separator, androidx.compose.foundation.shape.RoundedCornerShape(8.dp)),
+                ) {
+                    rows.forEachIndexed { r, row ->
+                        Row(Modifier.fillMaxWidth()) {
+                            row.forEachIndexed { c, cell ->
+                                BasicTextField(
+                                    value = cell,
+                                    onValueChange = { next ->
+                                        val copy = rows.map { it.toMutableList() }.toMutableList()
+                                        copy[r][c] = next
+                                        onTableChange(copy.map { it.toList() })
+                                    },
+                                    readOnly = readOnly,
+                                    textStyle = NotesTypography.bodyMedium.copy(color = colors.label),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(8.dp)
+                                        .clickable(onClick = onFocused),
+                                )
+                            }
+                        }
+                    }
+                    if (!readOnly) {
+                        Text(
+                            "+ Row",
+                            color = colors.secondary,
+                            fontSize = 12.sp,
+                            modifier = Modifier
+                                .padding(8.dp)
+                                .clickable {
+                                    val width = rows.firstOrNull()?.size ?: 2
+                                    onTableChange(rows + listOf(List(width) { "" }))
+                                },
+                        )
+                    }
+                }
+            }
+            else -> Unit
+        }
+        if (!readOnly) {
+            Text(
+                "Remove",
+                color = colors.tertiary,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .padding(bottom = 8.dp)
+                    .clickable(onClick = onRemove),
+            )
+        }
+    }
+}
+
+private fun decodeDataImage(src: String): androidx.compose.ui.graphics.ImageBitmap? {
+    return runCatching {
+        if (!src.startsWith("data:image")) return null
+        val b64 = src.substringAfter("base64,", missingDelimiterValue = "")
+        if (b64.isBlank()) return null
+        val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    }.getOrNull()
+}
+
+private fun playDataAudio(context: android.content.Context, src: String) {
+    val file = writeDataCache(context, src, "note-audio.dat") ?: return
+    android.media.MediaPlayer().apply {
+        setOnCompletionListener { player -> player.release() }
+        setOnErrorListener { player, _, _ ->
+            player.release()
+            true
+        }
+        setDataSource(file.absolutePath)
+        prepare()
+        start()
+    }
+}
+
+private fun openDataFile(context: android.content.Context, src: String, mimeHint: String?) {
+    val mime = mimeHint?.substringBefore('|')?.takeIf { it.contains('/') }
+        ?: src.substringAfter("data:").substringBefore(";").substringBefore(",").ifBlank { "*/*" }
+    val ext = when {
+        mime.startsWith("image/") -> ".jpg"
+        mime.startsWith("audio/") -> ".m4a"
+        mime == "application/pdf" -> ".pdf"
+        else -> ".bin"
+    }
+    val file = writeDataCache(context, src, "note-file$ext") ?: return
+    val uri = androidx.core.content.FileProvider.getUriForFile(
+        context,
+        context.packageName + ".fileprovider",
+        file,
+    )
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime)
+        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(android.content.Intent.createChooser(intent, "Open"))
+}
+
+private fun writeDataCache(context: android.content.Context, src: String, name: String): java.io.File? {
+    val b64 = src.substringAfter("base64,", missingDelimiterValue = "")
+    if (b64.isBlank()) return null
+    val bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+    val file = java.io.File(context.cacheDir, name)
+    file.writeBytes(bytes)
+    return file
+}
+
+private fun collapsedHiddenIds(blocks: List<NoteBlock>): Set<String> {
+    val hidden = mutableSetOf<String>()
+    var hiding = false
+    var hideLevel = 99
+    fun level(type: BlockType) = when (type) {
+        BlockType.TITLE -> 0
+        BlockType.HEADING -> 1
+        BlockType.SUBHEADING -> 2
+        else -> 3
+    }
+    blocks.forEach { block ->
+        val lvl = level(block.type)
+        if (lvl <= 2) {
+            if (hiding && lvl <= hideLevel) hiding = false
+            if (block.collapsed) {
+                hiding = true
+                hideLevel = lvl
+            }
+        } else if (hiding) {
+            hidden += block.id
+        }
+    }
+    return hidden
+}
+
 fun applyStyle(blocks: List<NoteBlock>, focusedId: String?, type: BlockType): List<NoteBlock> {
     if (focusedId == null) return blocks
     return blocks.map { block ->
         if (block.id == focusedId) block.copy(type = type) else block
     }
+}
+
+fun insertAfter(blocks: List<NoteBlock>, focusedId: String?, item: NoteBlock): Pair<List<NoteBlock>, String> {
+    val index = blocks.indexOfFirst { it.id == focusedId }
+    val next = blocks.toMutableList()
+    if (index < 0) next.add(item) else next.add(index + 1, item)
+    return next to item.id
 }
 
 fun insertChecklist(blocks: List<NoteBlock>, focusedId: String?): Pair<List<NoteBlock>, String> {
@@ -318,6 +578,17 @@ fun FormatBar(
     onMark: (MarkStyle) -> Unit,
     onOpenLink: (String) -> Unit = {},
     onChecklist: () -> Unit,
+    onAlign: (com.localnotes.data.model.BlockAlign) -> Unit = {},
+    onColor: (String?) -> Unit = {},
+    onHighlight: (String?) -> Unit = {},
+    onSize: (Float?) -> Unit = {},
+    onIndent: (Int) -> Unit = {},
+    onTable: () -> Unit = {},
+    onImage: () -> Unit = {},
+    onAudio: () -> Unit = {},
+    onFile: () -> Unit = {},
+    onDivider: () -> Unit = {},
+    onCollapse: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalNotesColors.current
@@ -327,15 +598,15 @@ fun FormatBar(
             .background(colors.toolbar)
             .padding(horizontal = 8.dp, vertical = 8.dp),
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ScrollRow {
             FormatChip("Title", current == BlockType.TITLE) { onStyle(BlockType.TITLE) }
             FormatChip("Heading", current == BlockType.HEADING) { onStyle(BlockType.HEADING) }
             FormatChip("Subheading", current == BlockType.SUBHEADING) { onStyle(BlockType.SUBHEADING) }
             FormatChip("Body", current == BlockType.BODY) { onStyle(BlockType.BODY) }
+            FormatChip("Aa Mono", current == BlockType.MONO) { onStyle(BlockType.MONO) }
         }
         Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            FormatChip("Aa Mono", current == BlockType.MONO) { onStyle(BlockType.MONO) }
+        ScrollRow {
             FormatChip("– List", current == BlockType.BULLET) { onStyle(BlockType.BULLET) }
             FormatChip("1. List", current == BlockType.NUMBERED) { onStyle(BlockType.NUMBERED) }
             FormatChip("☑", current == BlockType.CHECKLIST, onClick = onChecklist)
@@ -344,11 +615,62 @@ fun FormatBar(
             FormatChip("U", false, underline = true) { onMark(MarkStyle.UNDERLINE) }
             FormatChip("S", false, strike = true) { onMark(MarkStyle.STRIKE) }
             FormatChip("Link", false) { onMark(MarkStyle.LINK) }
-            if (!linkHref.isNullOrBlank()) {
-                FormatChip("Open", false) { onOpenLink(linkHref) }
+            if (!linkHref.isNullOrBlank()) FormatChip("Open", false) { onOpenLink(linkHref) }
+        }
+        Spacer(Modifier.height(6.dp))
+        ScrollRow {
+            FormatChip("Left", false) { onAlign(com.localnotes.data.model.BlockAlign.START) }
+            FormatChip("Center", false) { onAlign(com.localnotes.data.model.BlockAlign.CENTER) }
+            FormatChip("Right", false) { onAlign(com.localnotes.data.model.BlockAlign.END) }
+            FormatChip("⇤", false) { onIndent(-1) }
+            FormatChip("⇥", false) { onIndent(1) }
+            FormatChip("Fold", current == BlockType.HEADING || current == BlockType.TITLE) { onCollapse() }
+            FormatChip("Table", false, onClick = onTable)
+            FormatChip("Photo", false, onClick = onImage)
+            FormatChip("Audio", false, onClick = onAudio)
+            FormatChip("File", false, onClick = onFile)
+            FormatChip("Line", false, onClick = onDivider)
+        }
+        Spacer(Modifier.height(6.dp))
+        ScrollRow {
+            ColorDot("#1C1C1E") { onColor(null) }
+            listOf("#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#007AFF", "#5856D6", "#AF52DE").forEach { hex ->
+                ColorDot(hex) { onColor(hex) }
             }
+            listOf("#FFF2A8", "#C6F6D5", "#FBB6CE", "#BEE3F8", "#E9D8FD", "#FEEBC8").forEach { hex ->
+                ColorDot(hex, ring = true) { onHighlight(hex) }
+            }
+            FormatChip("11", false) { onSize(11f) }
+            FormatChip("15", false) { onSize(15f) }
+            FormatChip("21", false) { onSize(21f) }
+            FormatChip("28", false) { onSize(28f) }
         }
     }
+}
+
+@Composable
+private fun ScrollRow(content: @Composable RowScope.() -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
+}
+
+@Composable
+private fun ColorDot(hex: String, ring: Boolean = false, onClick: () -> Unit) {
+    val parsed = hex.removePrefix("#").toLongOrNull(16)?.let { Color(0xFF000000 or it) } ?: Color.Gray
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(parsed)
+            .then(if (ring) Modifier.border(1.dp, Color.DarkGray, CircleShape) else Modifier)
+            .clickable(onClick = onClick),
+    )
 }
 
 @Composable

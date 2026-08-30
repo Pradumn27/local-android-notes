@@ -170,6 +170,25 @@ Locked / password-protected notes are not decrypted.
 
 Last write wins if you type in the same note on both devices at once.
 
+## Formatting
+
+The Android editor uses the same HTML Notes.app stores, so styles survive a round trip:
+
+| On the phone | What syncs |
+|---|---|
+| Title, heading, subheading, body, mono | Apple font sizes 21 / 15 / 13 / 11 |
+| Bold, italic, underline, strikethrough | `<b>` `<i>` `<u>` `<strike>` |
+| Text color and highlight colors | CSS `color` / `background-color` |
+| Left / center / right, indent | `text-align`, `margin-left` |
+| Dash lists, numbered lists, checklists | `Apple-dash-list`, `<ol>`, `Apple-checklist` |
+| Links, `>> other note`, `#tags`, `@mentions` | `<a>`, `notes://`, Apple tag/mention spans |
+| Tables, photos, audio, files, divider | `<table>`, `<img>` / `<audio>` data URIs, `<hr>` |
+| Fold a heading | `data-collapsed` (phone-only if Notes strips it) |
+
+Photos, scans, sketches, and recordings that Notes keeps as **attachments** are exported by the Mac helper on a full pull and shown on the phone. Live typing still updates the text immediately; a new attachment appears after the next full pull (a few seconds). Locked notes stay title-only.
+
+Apple Notes does not expose every Mac-only object through AppleScript (handwriting ink, some sketches, collaboration cursors). Those stay on the Mac.
+
 ## Privacy
 
 - Traffic stays on your LAN (`http://<mac>:18765`).

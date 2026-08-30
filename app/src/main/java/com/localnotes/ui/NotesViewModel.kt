@@ -116,6 +116,15 @@ class NotesViewModel(
         compactScreen.value = CompactScreen.EDITOR
     }
 
+    fun openLinkedNote(href: String) {
+        viewModelScope.launch {
+            val note = repository.findNoteForLink(href) ?: return@launch
+            selectedFolderId.value = note.folderId
+            selectedNoteId.value = note.id
+            compactScreen.value = CompactScreen.EDITOR
+        }
+    }
+
     fun openFromWidget(noteId: String?, folderId: String?) {
         viewModelScope.launch {
             if (noteId != null) {

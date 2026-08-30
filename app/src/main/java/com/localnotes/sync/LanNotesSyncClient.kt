@@ -301,7 +301,7 @@ class LanNotesSyncClient(
             folderId = folderId,
             title = live.title,
             plaintext = live.plaintext,
-            html = live.html,
+            html = com.localnotes.data.html.AppleNotesHtml.preserveMedia(live.html, existing?.html),
             createdAt = live.createdAt,
             modifiedAt = maxOf(live.modifiedAt, now),
             passwordProtected = live.passwordProtected,

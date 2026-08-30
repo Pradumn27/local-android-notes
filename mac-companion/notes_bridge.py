@@ -30,6 +30,9 @@ AGENT_PLIST = Path.home() / "Library/LaunchAgents" / f"{AGENT_LABEL}.plist"
 NOTES_DIR = Path.home() / "Library/Group Containers/group.com.apple.notes"
 NOTES_LOCK = threading.Lock()
 CACHE_LOCK = threading.Lock()
+ATT_ROOT = Path.home() / "Library/Caches/local-notes-bridge/attachments"
+MAX_EMBED_BYTES = 6 * 1024 * 1024
+MEDIA_CACHE: dict[str, dict] = {}
 
 
 def computer_name() -> str:
@@ -80,6 +83,141 @@ def run_jxa(payload: dict) -> dict:
     if not parsed.get("ok"):
         raise RuntimeError(parsed.get("error") or "Notes helper failed")
     return parsed.get("result") or {}
+
+
+def mime_for(path: Path) -> str:
+    ext = path.suffix.lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".webp": "image/webp",
+        ".pdf": "application/pdf",
+        ".m4a": "audio/mp4",
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".caf": "audio/x-caf",
+        ".aac": "audio/aac",
+        ".mov": "video/quicktime",
+        ".mp4": "video/mp4",
+    }.get(ext, "application/octet-stream")
+
+
+def prepare_attachment(src: Path, dest_dir: Path) -> Path | None:
+    if not src.exists() or src.stat().st_size <= 0:
+        return None
+    mime = mime_for(src)
+    if mime.startswith("image/"):
+        out = dest_dir / (src.stem + ".jpg")
+        try:
+            subprocess.run(
+                ["sips", "-s", "format", "jpeg", "-Z", "1600", str(src), "--out", str(out)],
+                check=False,
+                capture_output=True,
+                timeout=30,
+            )
+            if out.exists() and out.stat().st_size > 0:
+                return out
+        except Exception:
+            pass
+    if src.stat().st_size > MAX_EMBED_BYTES:
+        return None
+    return src
+
+
+def data_uri_for(path: Path) -> str | None:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if not raw or len(raw) > MAX_EMBED_BYTES:
+        return None
+    import base64
+
+    mime = mime_for(path)
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+
+
+def attachment_key(atts: list) -> tuple:
+    return tuple(
+        (str(item.get("id") or ""), str(item.get("name") or ""), str(item.get("contentIdentifier") or ""))
+        for item in atts
+    )
+
+
+def load_media_entry(apple_id: str, atts: list) -> dict:
+    dest = ATT_ROOT / hashlib.sha1(apple_id.encode("utf-8", "replace")).hexdigest()
+    dest.mkdir(parents=True, exist_ok=True)
+    existing = [p for p in dest.iterdir() if p.is_file() and p.stat().st_size > 0]
+    if len(existing) < len(atts):
+        try:
+            run_jxa({"op": "export_attachments", "appleId": apple_id, "destDir": str(dest)})
+        except Exception as exc:
+            sys.stderr.write("export attachments failed: %s\n" % exc)
+        existing = [p for p in dest.iterdir() if p.is_file() and p.stat().st_size > 0]
+    files = []
+    prepared_dir = dest / "ready"
+    prepared_dir.mkdir(exist_ok=True)
+    for path in sorted(existing):
+        if path.parent == prepared_dir:
+            continue
+        ready = prepare_attachment(path, prepared_dir)
+        if ready is None:
+            continue
+        uri = data_uri_for(ready)
+        if not uri:
+            continue
+        files.append(
+            {
+                "name": path.name,
+                "mime": mime_for(ready),
+                "uri": uri,
+            }
+        )
+    extras = []
+    for item in files:
+        mime = item["mime"]
+        uri = item["uri"]
+        name = item["name"]
+        safe_name = (
+            name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+        )
+        if mime.startswith("image/"):
+            extras.append('<div><img src="%s" alt="%s"/></div>' % (uri, safe_name))
+        elif mime.startswith("audio/"):
+            extras.append('<div><audio controls src="%s"></audio></div>' % uri)
+        else:
+            extras.append(
+                '<div><a href="%s" download="%s">%s</a></div>' % (uri, safe_name, safe_name)
+            )
+    return {"extras": "".join(extras), "files": files}
+
+
+def embed_note_media(snapshot: dict, *, full: bool) -> dict:
+    if not snapshot or snapshot.get("passwordProtected"):
+        return snapshot
+    apple_id = snapshot.get("appleId")
+    if not apple_id:
+        return snapshot
+    atts = snapshot.get("attachments") or []
+    if not atts:
+        return snapshot
+    key = attachment_key(atts)
+    entry = MEDIA_CACHE.get(apple_id)
+    if entry is None or entry.get("key") != key:
+        if not full:
+            return snapshot
+        entry = {"key": key, **load_media_entry(apple_id, atts)}
+        MEDIA_CACHE[apple_id] = entry
+    extras = entry.get("extras") or ""
+    html = snapshot.get("html") or ""
+    if extras and extras not in html:
+        snapshot = dict(snapshot)
+        snapshot["html"] = html + extras
+    return snapshot
 
 
 def notes_disk_stamp() -> str:
@@ -262,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 with NOTES_LOCK:
                     result = run_jxa({"op": "get", "appleId": apple_id})
-                self._send(200, result)
+                self._send(200, embed_note_media(result, full=True))
                 return
             self._send(404, {"error": "not found"})
         except Exception as exc:

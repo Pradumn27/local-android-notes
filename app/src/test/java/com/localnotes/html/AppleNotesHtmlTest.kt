@@ -104,4 +104,125 @@ class AppleNotesHtmlTest {
         assertEquals(BlockType.BULLET, lines[0].type)
         assertEquals(BlockType.CHECKLIST, lines[2].type)
     }
+
+    @Test
+    fun colorAlignHighlightAndCollapseRoundTrip() {
+        val original = listOf(
+            NoteBlock(
+                "1",
+                BlockType.TITLE,
+                "Painted",
+                align = com.localnotes.data.model.BlockAlign.CENTER,
+                collapsed = true,
+            ),
+            NoteBlock(
+                "2",
+                BlockType.BODY,
+                "red and yellow",
+                marks = listOf(
+                    com.localnotes.data.model.TextMark(0, 3, com.localnotes.data.model.MarkStyle.COLOR, color = "#FF3B30"),
+                    com.localnotes.data.model.TextMark(8, 14, com.localnotes.data.model.MarkStyle.HIGHLIGHT, highlight = "#FFF2A8"),
+                ),
+                indent = 1,
+            ),
+        )
+        val html = AppleNotesHtml.encode(original).html
+        assertTrue(html.contains("text-align: center"))
+        assertTrue(html.contains("data-collapsed=\"true\""))
+        assertTrue(html.contains("color: #FF3B30"))
+        assertTrue(html.contains("background-color: #FFF2A8"))
+        assertTrue(html.contains("margin-left: 20px"))
+        val decoded = AppleNotesHtml.decode(html)
+        assertEquals(BlockType.TITLE, decoded[0].type)
+        assertEquals(com.localnotes.data.model.BlockAlign.CENTER, decoded[0].align)
+        assertTrue(decoded[0].collapsed)
+        assertTrue(decoded[1].marks.any { it.style == com.localnotes.data.model.MarkStyle.COLOR && it.color == "#FF3B30" })
+        assertTrue(decoded[1].marks.any { it.style == com.localnotes.data.model.MarkStyle.HIGHLIGHT && it.highlight == "#FFF2A8" })
+        assertEquals(1, decoded[1].indent)
+    }
+
+    @Test
+    fun tableImageFileAndDividerRoundTrip() {
+        val original = listOf(
+            NoteBlock("1", BlockType.TITLE, "Media"),
+            NoteBlock("2", BlockType.TABLE, "", tableRows = listOf(listOf("A", "B"), listOf("1", "2"))),
+            NoteBlock("3", BlockType.IMAGE, "data:image/jpeg;base64,abcd", mime = "image/jpeg"),
+            NoteBlock("4", BlockType.FILE, "data:application/pdf;base64,abcd", mime = "application/pdf|tax.pdf"),
+            NoteBlock("5", BlockType.DIVIDER, ""),
+            NoteBlock("6", BlockType.AUDIO, "data:audio/mp4;base64,abcd", mime = "audio/mp4"),
+        )
+        val encoded = AppleNotesHtml.encode(original)
+        assertTrue(encoded.html.contains("<table"))
+        assertTrue(encoded.html.contains("<img"))
+        assertTrue(encoded.html.contains("download=\"tax.pdf\""))
+        assertTrue(encoded.html.contains("<hr"))
+        assertTrue(encoded.html.contains("<audio"))
+        assertTrue(encoded.plaintext.contains("[Image]"))
+        val decoded = AppleNotesHtml.decode(encoded.html)
+        assertTrue(decoded.any { it.type == BlockType.TABLE && it.tableRows[0][0] == "A" })
+        assertTrue(decoded.any { it.type == BlockType.IMAGE && it.text.startsWith("data:image") })
+        assertTrue(decoded.any { it.type == BlockType.FILE && it.text.startsWith("data:application/pdf") })
+        assertTrue(decoded.any { it.type == BlockType.DIVIDER })
+        assertTrue(decoded.any { it.type == BlockType.AUDIO })
+    }
+
+    @Test
+    fun tagsMentionsNoteLinksAndDashDivider() {
+        val html = """
+            <div><span style="font-size: 11px">See >> Groceries and #taxes with @Ada</span></div>
+            <div>——————————</div>
+            <div><a href="data:application/pdf;base64,QQ==" download="scan.pdf">scan.pdf</a></div>
+        """.trimIndent()
+        val blocks = AppleNotesHtml.decode(html)
+        val body = blocks.first { it.text.contains("Groceries") }
+        assertTrue(body.marks.any { it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK && it.href?.contains("Groceries") == true })
+        assertTrue(body.marks.any { it.style == com.localnotes.data.model.MarkStyle.TAG })
+        assertTrue(body.marks.any { it.style == com.localnotes.data.model.MarkStyle.MENTION })
+        assertTrue(blocks.any { it.type == BlockType.DIVIDER })
+        assertTrue(blocks.any { it.type == BlockType.FILE && it.text.startsWith("data:application/pdf") })
+    }
+
+    @Test
+    fun displayLinesShowsTablesAndMedia() {
+        val html = AppleNotesHtml.encode(
+            listOf(
+                NoteBlock("1", BlockType.TITLE, "Album"),
+                NoteBlock("2", BlockType.TABLE, "", tableRows = listOf(listOf("left", "right"))),
+                NoteBlock("3", BlockType.IMAGE, "data:image/jpeg;base64,xx", mime = "image/jpeg"),
+                NoteBlock("4", BlockType.DIVIDER, ""),
+            ),
+        ).html
+        val lines = AppleNotesHtml.displayLines(html, "Album")
+        assertTrue(lines.any { it.type == BlockType.TABLE && it.text.contains("left") })
+        assertTrue(lines.any { it.type == BlockType.IMAGE })
+        assertTrue(lines.any { it.type == BlockType.DIVIDER })
+    }
+
+    @Test
+    fun preserveMediaKeepsDataUrisAcrossLiveHtml() {
+        val withPhoto = AppleNotesHtml.encode(
+            listOf(
+                NoteBlock("1", BlockType.TITLE, "Shot"),
+                NoteBlock("2", BlockType.IMAGE, "data:image/jpeg;base64,qq", mime = "image/jpeg"),
+            ),
+        ).html
+        val live = """<div><b><span style="font-size: 21px">Shot</span></b></div><div>typed more</div>"""
+        val merged = AppleNotesHtml.preserveMedia(live, withPhoto)
+        val blocks = AppleNotesHtml.decode(merged)
+        assertTrue(blocks.any { it.text.contains("typed more") })
+        assertTrue(blocks.any { it.type == BlockType.IMAGE && it.text.startsWith("data:image") })
+    }
+
+    @Test
+    fun mixedFontSizeDoesNotPromoteWholeParagraph() {
+        val html = """
+            <div><b><span style="font-size: 21px">Nice</span></b></div>
+            <div><span style="font-size: 11px">hello </span><span style="font-size: 28px">BIG</span></div>
+        """.trimIndent()
+        val blocks = AppleNotesHtml.decode(html)
+        assertEquals(BlockType.TITLE, blocks[0].type)
+        assertEquals(BlockType.BODY, blocks[1].type)
+        assertEquals("hello BIG", blocks[1].text)
+        assertTrue(blocks[1].marks.any { it.style == com.localnotes.data.model.MarkStyle.FONT_SIZE && it.fontSizePx == 28f })
+    }
 }

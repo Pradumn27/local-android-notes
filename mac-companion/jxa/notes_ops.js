@@ -32,6 +32,8 @@ function dispatch(Notes, payload) {
       return moveNote(Notes, payload);
     case "live":
       return liveNote(Notes);
+    case "export_attachments":
+      return exportAttachments(Notes, payload);
     default:
       throw "unknown op: " + payload.op;
   }
@@ -112,6 +114,7 @@ function snapshotNote(note) {
   const locked = !!note.passwordProtected();
   const plaintext = locked ? "" : String(note.plaintext());
   const html = locked ? "" : String(note.body());
+  const attachments = locked ? [] : listAttachments(note);
   return {
     appleId: note.id(),
     title: note.name(),
@@ -122,8 +125,78 @@ function snapshotNote(note) {
     createdAt: note.creationDate().toISOString(),
     modifiedAt: note.modificationDate().toISOString(),
     passwordProtected: locked,
-    fingerprint: String(plaintext.length) + ":" + plaintext,
+    attachments: attachments,
+    fingerprint: String(plaintext.length) + ":" + plaintext + ":a" + attachments.length,
   };
+}
+
+function listAttachments(note) {
+  const out = [];
+  let atts = [];
+  try {
+    atts = note.attachments();
+  } catch (e) {
+    return out;
+  }
+  for (let i = 0; i < atts.length; i++) {
+    const att = atts[i];
+    const row = { index: i };
+    try { row.id = String(att.id()); } catch (e) {}
+    try { row.name = String(att.name()); } catch (e) { row.name = "attachment-" + i; }
+    try { row.contentIdentifier = String(att.contentIdentifier()); } catch (e) {}
+    out.push(row);
+  }
+  return out;
+}
+
+function exportAttachments(Notes, payload) {
+  const note = Notes.notes.byId(payload.appleId);
+  const destDir = payload.destDir;
+  if (!destDir) throw "destDir required";
+  const app = Application.currentApplication();
+  app.includeStandardAdditions = true;
+  try {
+    app.doShellScript("mkdir -p " + quoted(destDir));
+  } catch (e) {}
+  let atts = [];
+  try {
+    atts = note.attachments();
+  } catch (e) {
+    return { attachments: [] };
+  }
+  const out = [];
+  for (let i = 0; i < atts.length; i++) {
+    const att = atts[i];
+    let name = "attachment-" + i;
+    try {
+      name = String(att.name()) || name;
+    } catch (e) {}
+    const safe = String(name).replace(/[^A-Za-z0-9._-]+/g, "_") || ("att-" + i);
+    const dest = destDir + "/" + i + "-" + safe;
+    let saved = false;
+    let error = null;
+    try {
+      att.save({ in: Path(dest) });
+      saved = true;
+    } catch (e1) {
+      try {
+        Notes.save(att, { in: Path(dest) });
+        saved = true;
+      } catch (e2) {
+        error = String(e2);
+      }
+    }
+    const row = { index: i, name: name, path: dest, saved: saved };
+    try { row.id = String(att.id()); } catch (e) {}
+    try { row.contentIdentifier = String(att.contentIdentifier()); } catch (e) {}
+    if (error) row.error = error;
+    out.push(row);
+  }
+  return { attachments: out };
+}
+
+function quoted(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 
 function getNote(Notes, appleId) {

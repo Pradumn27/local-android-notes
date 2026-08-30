@@ -184,6 +184,18 @@ class NotesRepository(private val db: NotesDatabase) {
 
     suspend fun noteById(id: String): NoteEntity? = db.notes().getById(id)
 
+    suspend fun findNoteForLink(href: String): NoteEntity? {
+        val all = db.notes().getAll().filter { it.deletedAt == null }
+        val raw = href.trim()
+        if (raw.startsWith("x-coredata:")) {
+            return all.find { it.appleId == raw }
+        }
+        val title = raw.removePrefix("notes://").removePrefix(">>").trim()
+        if (title.isBlank()) return null
+        return all.find { it.title.equals(title, ignoreCase = true) }
+            ?: all.find { title.length >= 3 && it.title.contains(title, ignoreCase = true) }
+    }
+
     suspend fun latestActiveNote(): NoteEntity? = db.notes().latestActive()
 
     suspend fun activeNotes(): List<NoteEntity> = db.notes().getActive()
