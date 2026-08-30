@@ -12,7 +12,7 @@ import com.localnotes.data.model.NoteBlock
 import com.localnotes.data.model.TextMark
 import com.localnotes.ui.theme.NotesColors
 
-fun NoteBlock.toAnnotated(base: TextStyle, colors: NotesColors): AnnotatedString {
+fun NoteBlock.toAnnotated(base: TextStyle, colors: NotesColors, applySize: Boolean = true): AnnotatedString {
     val builder = AnnotatedString.Builder()
     builder.append(text)
     if (text.isEmpty()) return builder.toAnnotatedString()
@@ -43,8 +43,12 @@ fun NoteBlock.toAnnotated(base: TextStyle, colors: NotesColors): AnnotatedString
                 },
                 fontWeight = if (active.any { it.style == MarkStyle.BOLD }) FontWeight.Bold else base.fontWeight,
                 fontStyle = if (active.any { it.style == MarkStyle.ITALIC }) FontStyle.Italic else FontStyle.Normal,
-                fontSize = sizeMark?.fontSizePx?.let { androidx.compose.ui.unit.TextUnit(it, androidx.compose.ui.unit.TextUnitType.Sp) }
-                    ?: base.fontSize,
+                fontSize = if (applySize) {
+                    sizeMark?.fontSizePx?.let { androidx.compose.ui.unit.TextUnit(it, androidx.compose.ui.unit.TextUnitType.Sp) }
+                        ?: base.fontSize
+                } else {
+                    base.fontSize
+                },
                 textDecoration = if (decorations.isEmpty()) TextDecoration.None else TextDecoration.combine(decorations),
                 background = when {
                     highlightMark?.highlight != null -> parseHex(highlightMark.highlight).copy(alpha = 0.55f)

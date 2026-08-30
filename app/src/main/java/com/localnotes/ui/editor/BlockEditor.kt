@@ -1,5 +1,6 @@
 package com.localnotes.ui.editor
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,12 +11,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -30,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
@@ -45,11 +48,17 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.localnotes.data.html.AppleNotesHtml
 import com.localnotes.data.model.BlockType
 import com.localnotes.data.model.MarkStyle
@@ -141,6 +150,7 @@ fun BlockEditor(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BlockRow(
     block: NoteBlock,
@@ -160,17 +170,22 @@ private fun BlockRow(
 ) {
     val colors = LocalNotesColors.current
     val focusRequester = remember { FocusRequester() }
+    val bringIntoView = remember { BringIntoViewRequester() }
+    var hasFocus by remember { mutableStateOf(false) }
     var value by remember(block.id) {
         mutableStateOf(TextFieldValue(block.text, TextRange(block.text.length)))
     }
     LaunchedEffect(block.text) {
         if (block.text != value.text) {
-            value = value.copy(text = block.text)
+            val nextSelection = value.selection.start.coerceIn(0, block.text.length)
+            value = value.copy(text = block.text, selection = TextRange(nextSelection))
         }
     }
     LaunchedEffect(requestFocus) {
-        if (requestFocus) {
+        if (requestFocus && !hasFocus) {
             runCatching { focusRequester.requestFocus() }
+            delay(80)
+            runCatching { bringIntoView.bringIntoView() }
         }
     }
 
@@ -184,8 +199,13 @@ private fun BlockRow(
         textDecoration = if (block.checked) TextDecoration.LineThrough else TextDecoration.None,
         textAlign = align,
     )
-    val annotated = remember(block.text, block.marks, block.checked, colors.isDark) {
-        block.toAnnotated(style, colors)
+    val marksTransform = remember(block.marks, block.checked, colors.isDark, style) {
+        VisualTransformation { text ->
+            TransformedText(
+                block.copy(text = text.text).toAnnotated(style, colors, applySize = false),
+                OffsetMapping.Identity,
+            )
+        }
     }
 
     if (block.type == BlockType.TABLE || block.type == BlockType.IMAGE ||
@@ -208,16 +228,6 @@ private fun BlockRow(
             .padding(vertical = blockVertical(block.type)),
         verticalAlignment = Alignment.Top,
     ) {
-        if (block.type == BlockType.TITLE || block.type == BlockType.HEADING || block.type == BlockType.SUBHEADING) {
-            Text(
-                if (block.collapsed) "▶" else "▼",
-                color = colors.tertiary,
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .padding(top = 8.dp, end = 8.dp)
-                    .clickable(onClick = onToggleCollapse),
-            )
-        }
         when (block.type) {
             BlockType.CHECKLIST -> {
                 Box(
@@ -271,13 +281,21 @@ private fun BlockRow(
                     }
                 },
                 readOnly = readOnly,
-                textStyle = style.copy(color = Color.Transparent),
+                singleLine = false,
+                textStyle = style,
                 cursorBrush = SolidColor(colors.gold),
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                visualTransformation = marksTransform,
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Sentences,
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.None,
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .bringIntoViewRequester(bringIntoView)
                     .focusRequester(focusRequester)
                     .onFocusChanged {
+                        hasFocus = it.isFocused
                         onFocused(it.isFocused)
                         if (it.isFocused) onSelection(value.selection.start, value.selection.end)
                     }
@@ -296,8 +314,6 @@ private fun BlockRow(
                     Box {
                         if (value.text.isEmpty()) {
                             Text(placeholder(block.type, index), style = style.copy(color = colors.tertiary))
-                        } else {
-                            Text(text = annotated, style = style)
                         }
                         inner()
                     }
@@ -574,6 +590,8 @@ private fun numberFor(blocks: List<NoteBlock>, index: Int): Int {
 fun FormatBar(
     current: BlockType?,
     linkHref: String? = null,
+    expanded: Boolean = false,
+    onToggleExpanded: () -> Unit = {},
     onStyle: (BlockType) -> Unit,
     onMark: (MarkStyle) -> Unit,
     onOpenLink: (String) -> Unit = {},
@@ -595,55 +613,52 @@ fun FormatBar(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .focusProperties { canFocus = false }
             .background(colors.toolbar)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
     ) {
         ScrollRow {
-            FormatChip("Title", current == BlockType.TITLE) { onStyle(BlockType.TITLE) }
-            FormatChip("Heading", current == BlockType.HEADING) { onStyle(BlockType.HEADING) }
-            FormatChip("Subheading", current == BlockType.SUBHEADING) { onStyle(BlockType.SUBHEADING) }
-            FormatChip("Body", current == BlockType.BODY) { onStyle(BlockType.BODY) }
-            FormatChip("Aa Mono", current == BlockType.MONO) { onStyle(BlockType.MONO) }
-        }
-        Spacer(Modifier.height(6.dp))
-        ScrollRow {
-            FormatChip("– List", current == BlockType.BULLET) { onStyle(BlockType.BULLET) }
-            FormatChip("1. List", current == BlockType.NUMBERED) { onStyle(BlockType.NUMBERED) }
-            FormatChip("☑", current == BlockType.CHECKLIST, onClick = onChecklist)
+            FormatChip("Aa", expanded) { onToggleExpanded() }
             FormatChip("B", false, bold = true) { onMark(MarkStyle.BOLD) }
             FormatChip("I", false, italic = true) { onMark(MarkStyle.ITALIC) }
             FormatChip("U", false, underline = true) { onMark(MarkStyle.UNDERLINE) }
             FormatChip("S", false, strike = true) { onMark(MarkStyle.STRIKE) }
+            FormatChip("–", current == BlockType.BULLET) { onStyle(BlockType.BULLET) }
+            FormatChip("1.", current == BlockType.NUMBERED) { onStyle(BlockType.NUMBERED) }
+            FormatChip("☑", current == BlockType.CHECKLIST, onClick = onChecklist)
             FormatChip("Link", false) { onMark(MarkStyle.LINK) }
             if (!linkHref.isNullOrBlank()) FormatChip("Open", false) { onOpenLink(linkHref) }
-        }
-        Spacer(Modifier.height(6.dp))
-        ScrollRow {
-            FormatChip("Left", false) { onAlign(com.localnotes.data.model.BlockAlign.START) }
-            FormatChip("Center", false) { onAlign(com.localnotes.data.model.BlockAlign.CENTER) }
-            FormatChip("Right", false) { onAlign(com.localnotes.data.model.BlockAlign.END) }
-            FormatChip("⇤", false) { onIndent(-1) }
-            FormatChip("⇥", false) { onIndent(1) }
-            FormatChip("Fold", current == BlockType.HEADING || current == BlockType.TITLE) { onCollapse() }
-            FormatChip("Table", false, onClick = onTable)
             FormatChip("Photo", false, onClick = onImage)
-            FormatChip("Audio", false, onClick = onAudio)
-            FormatChip("File", false, onClick = onFile)
-            FormatChip("Line", false, onClick = onDivider)
         }
-        Spacer(Modifier.height(6.dp))
-        ScrollRow {
-            ColorDot("#1C1C1E") { onColor(null) }
-            listOf("#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#007AFF", "#5856D6", "#AF52DE").forEach { hex ->
-                ColorDot(hex) { onColor(hex) }
+        if (expanded) {
+            Spacer(Modifier.height(6.dp))
+            ScrollRow {
+                FormatChip("Title", current == BlockType.TITLE) { onStyle(BlockType.TITLE) }
+                FormatChip("Heading", current == BlockType.HEADING) { onStyle(BlockType.HEADING) }
+                FormatChip("Subheading", current == BlockType.SUBHEADING) { onStyle(BlockType.SUBHEADING) }
+                FormatChip("Body", current == BlockType.BODY) { onStyle(BlockType.BODY) }
+                FormatChip("Mono", current == BlockType.MONO) { onStyle(BlockType.MONO) }
+                FormatChip("Left", false) { onAlign(com.localnotes.data.model.BlockAlign.START) }
+                FormatChip("Center", false) { onAlign(com.localnotes.data.model.BlockAlign.CENTER) }
+                FormatChip("Right", false) { onAlign(com.localnotes.data.model.BlockAlign.END) }
+                FormatChip("⇤", false) { onIndent(-1) }
+                FormatChip("⇥", false) { onIndent(1) }
+                FormatChip("Fold", false) { onCollapse() }
             }
-            listOf("#FFF2A8", "#C6F6D5", "#FBB6CE", "#BEE3F8", "#E9D8FD", "#FEEBC8").forEach { hex ->
-                ColorDot(hex, ring = true) { onHighlight(hex) }
+            Spacer(Modifier.height(6.dp))
+            ScrollRow {
+                FormatChip("Table", false, onClick = onTable)
+                FormatChip("Audio", false, onClick = onAudio)
+                FormatChip("File", false, onClick = onFile)
+                FormatChip("Line", false, onClick = onDivider)
+                ColorDot("#1C1C1E") { onColor(null) }
+                listOf("#FF3B30", "#FF9500", "#FFCC00", "#34C759", "#007AFF", "#5856D6", "#AF52DE").forEach { hex ->
+                    ColorDot(hex) { onColor(hex) }
+                }
+                listOf("#FFF2A8", "#C6F6D5", "#FBB6CE", "#BEE3F8", "#E9D8FD").forEach { hex ->
+                    ColorDot(hex, ring = true) { onHighlight(hex) }
+                }
             }
-            FormatChip("11", false) { onSize(11f) }
-            FormatChip("15", false) { onSize(15f) }
-            FormatChip("21", false) { onSize(21f) }
-            FormatChip("28", false) { onSize(28f) }
         }
     }
 }
@@ -653,6 +668,7 @@ private fun ScrollRow(content: @Composable RowScope.() -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .focusProperties { canFocus = false }
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -666,6 +682,7 @@ private fun ColorDot(hex: String, ring: Boolean = false, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(22.dp)
+            .focusProperties { canFocus = false }
             .clip(CircleShape)
             .background(parsed)
             .then(if (ring) Modifier.border(1.dp, Color.DarkGray, CircleShape) else Modifier)
@@ -696,6 +713,7 @@ private fun FormatChip(
             else -> TextDecoration.None
         },
         modifier = Modifier
+            .focusProperties { canFocus = false }
             .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
             .background(if (selected) colors.sidebarSelected else colors.search.copy(alpha = 0.6f))
             .clickable(onClick = onClick)

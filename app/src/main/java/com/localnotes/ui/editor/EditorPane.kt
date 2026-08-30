@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.localnotes.data.model.BlockType
 import com.localnotes.data.model.FolderKind
@@ -80,10 +83,15 @@ fun EditorPane(
     }
 
     var blocks by remember(note.id) { mutableStateOf(note.blocks) }
-    var focusedId by remember(note.id) { mutableStateOf(note.blocks.firstOrNull()?.id) }
-    var showFormat by remember { mutableStateOf(true) }
+    var focusedId by remember(note.id) {
+        val fresh = note.blocks.size <= 1 && note.blocks.firstOrNull()?.text.isNullOrBlank()
+        mutableStateOf(if (fresh) note.blocks.firstOrNull()?.id else null)
+    }
+    var showFormat by remember { mutableStateOf(false) }
+    var formatExpanded by remember { mutableStateOf(false) }
     var lastEditAt by remember(note.id) { mutableStateOf(0L) }
     var selection by remember(note.id) { mutableStateOf(0 to 0) }
+    val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val context = LocalContext.current
     val isTrash = note.deletedAt != null || folderKind == FolderKind.RECENTLY_DELETED
@@ -179,13 +187,19 @@ fun EditorPane(
                     NotesIconButton(
                         Icons.Outlined.TextFormat,
                         "Format",
-                        tint = if (showFormat) colors.gold else colors.secondary,
-                        onClick = { showFormat = !showFormat },
+                        tint = if (showFormat || formatExpanded) colors.gold else colors.secondary,
+                        onClick = {
+                            showFormat = !showFormat
+                            if (!showFormat) formatExpanded = false
+                        },
                     )
                 }
                 EditorMenu(
                     isTrash = isTrash,
-                    onFormat = { showFormat = !showFormat },
+                    onFormat = {
+                        showFormat = !showFormat
+                        if (!showFormat) formatExpanded = false
+                    },
                     onMove = { onMove(note) },
                     onDelete = { onDelete(note) },
                     onRestore = { onRestore(note) },
@@ -223,11 +237,13 @@ fun EditorPane(
             Spacer(Modifier.height(24.dp))
         }
 
-        if (showFormat && !isTrash) {
+        if (!isTrash && (imeVisible || showFormat)) {
             val focused = blocks.firstOrNull { it.id == focusedId }
             FormatBar(
                 current = focused?.type ?: BlockType.BODY,
                 linkHref = linkAt(focused, selection.first)?.href,
+                expanded = formatExpanded,
+                onToggleExpanded = { formatExpanded = !formatExpanded },
                 onStyle = { type ->
                     commit(applyStyle(blocks, focusedId, type))
                 },
