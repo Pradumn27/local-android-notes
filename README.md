@@ -67,13 +67,20 @@ The window prints something like:
 
 The PIN and a pairing token live only on your Mac in `~/.local-notes-bridge.json` (mode `600`). Changing the PIN does not wipe notes. The phone must type the current PIN once if the token was never stored, or if you deleted that file.
 
-To start the helper at login (optional):
+To run the helper **always** (no terminal window, starts at login, restarts if it dies):
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.localnotes.bridge.plist
+cd mac-companion
+./install-login-item.sh
 ```
 
-The helper writes that plist the first time it runs. After that, log out/in and it comes back with the **same PIN**.
+You can close every terminal after that. Check `~/Library/Logs/local-notes-bridge.log` if something looks off.
+
+Stop it:
+
+```bash
+launchctl bootout gui/$(id -u)/com.localnotes.bridge
+```
 
 ## 2. Install the Android app
 
