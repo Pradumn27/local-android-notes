@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Notes</string>
+    <string name="note_widget_label">Note</string>
+    <string name="note_widget_description">Show one note on your Home Screen</string>
+    <string name="folder_widget_label">Folder</string>
+    <string name="folder_widget_description">Show a folder of notes on your Home Screen</string>
+</resources>
