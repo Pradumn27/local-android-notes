@@ -46,11 +46,27 @@ class LanNotesSyncClient(
     override fun setLiveWidgetsOptIn(enabled: Boolean) {
         LiveSyncService.setOptedIn(appContext, enabled)
         if (enabled) {
-            LiveSyncService.startIfAllowed(appContext)
+            LiveSyncService.startIfAllowed(appContext, reconnect = true)
+            LiveSyncWorker.schedule(appContext)
         } else {
             LiveSyncService.stop(appContext)
+            LiveSyncWorker.cancel(appContext)
         }
         _status.update { it.copy(liveWidgetsOptedIn = enabled && LiveSyncService.notificationsAllowed(appContext)) }
+    }
+
+    override fun reconnectNow() {
+        lastRevision = null
+        _status.update { it.copy(live = false) }
+        startAutoSync()
+        scope.launch {
+            val token = prefs.getString(KEY_TOKEN, null) ?: return@launch
+            repeat(6) { attempt ->
+                val peer = preferredPeer() ?: savedPeer() ?: return@repeat
+                if (tryConnect(peer, token)) return@launch
+                delay(1_200L * (attempt + 1))
+            }
+        }
     }
 
     override fun startAutoSync() {

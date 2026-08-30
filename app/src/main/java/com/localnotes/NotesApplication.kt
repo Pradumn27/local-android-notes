@@ -5,6 +5,7 @@ import com.localnotes.data.local.NotesDatabase
 import com.localnotes.data.repository.NotesRepository
 import com.localnotes.sync.LanNotesSyncClient
 import com.localnotes.sync.LiveSyncService
+import com.localnotes.sync.LiveSyncWorker
 import com.localnotes.sync.NotesSyncClient
 import com.localnotes.widget.WidgetRefresher
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,9 @@ class NotesApplication : Application() {
         syncClient = LanNotesSyncClient(this, repository)
         syncClient.startAutoSync()
         LiveSyncService.startIfAllowed(this)
+        if (LiveSyncService.optedIn(this)) {
+            LiveSyncWorker.schedule(this)
+        }
         appScope.launch {
             repository.notes.collectLatest {
                 WidgetRefresher.schedule(this@NotesApplication)

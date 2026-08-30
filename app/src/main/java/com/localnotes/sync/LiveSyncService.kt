@@ -8,6 +8,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -18,6 +22,17 @@ import com.localnotes.R
 
 class LiveSyncService : Service() {
 
+    private var networks: ConnectivityManager? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            client().reconnectNow()
+        }
+
+        override fun onLost(network: Network) {
+            // The poll loop will mark live=false; reconnect when Wi-Fi returns.
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
@@ -27,15 +42,41 @@ class LiveSyncService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
-        (application as NotesApplication).syncClient.startAutoSync()
+        client().startAutoSync()
+        registerNetworkWatch()
+        LiveSyncWorker.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        (application as NotesApplication).syncClient.startAutoSync()
+        client().startAutoSync()
+        if (intent?.action == ACTION_RECONNECT) {
+            client().reconnectNow()
+        }
         return START_STICKY
     }
 
+    override fun onDestroy() {
+        unregisterNetworkWatch()
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun client() = (application as NotesApplication).syncClient
+
+    private fun registerNetworkWatch() {
+        val manager = getSystemService(ConnectivityManager::class.java)
+        networks = manager
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        runCatching { manager.registerNetworkCallback(request, networkCallback) }
+    }
+
+    private fun unregisterNetworkWatch() {
+        runCatching { networks?.unregisterNetworkCallback(networkCallback) }
+        networks = null
+    }
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -96,13 +137,17 @@ class LiveSyncService : Service() {
                 .apply()
         }
 
-        fun startIfAllowed(context: Context) {
+        const val ACTION_RECONNECT = "com.localnotes.sync.RECONNECT"
+
+        fun startIfAllowed(context: Context, reconnect: Boolean = false) {
             val app = context.applicationContext
             val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             if (prefs.getString(KEY_TOKEN, null).isNullOrBlank()) return
             if (!optedIn(app)) return
             if (!notificationsAllowed(app)) return
-            ContextCompat.startForegroundService(app, Intent(app, LiveSyncService::class.java))
+            val intent = Intent(app, LiveSyncService::class.java)
+            if (reconnect) intent.action = ACTION_RECONNECT
+            ContextCompat.startForegroundService(app, intent)
         }
 
         fun stop(context: Context) {

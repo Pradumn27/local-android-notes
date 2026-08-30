@@ -183,7 +183,10 @@ Ignore it. The helper does not send keystrokes anymore. It only needs permission
 Samsung dropped ADB. Unlock, set USB to MIDI or file transfer, install the APK with `adb install -r` (do not restart the adb server).
 
 **Widget does not move unless I open the app**  
-Live widgets are off, or notifications were denied. Folders → gear → Enable live widgets → allow notifications.
+Live widgets are off, or notifications were denied. Folders → gear → Enable live widgets → allow notifications. After you leave Wi-Fi and come back, the listener reconnects on its own; leave the “Notes is live” notification on.
+
+**I switched Wi-Fi, edited on the Mac, then came back — widget stayed stale**  
+Turn live widgets on (notifications allowed) and set **Settings → Apps → Notes → Battery → Unrestricted**. The helper must still be running on the Mac. The phone now reconnects when Wi-Fi returns and pulls whatever changed while you were gone.
 
 **Notes.app did not update from the phone**  
 The helper must be running. Check the terminal still shows the PIN banner.

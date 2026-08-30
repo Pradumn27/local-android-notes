@@ -62,4 +62,5 @@ interface NotesSyncClient {
     fun startAutoSync()
     fun notifyLocalChange(noteId: String? = null)
     fun setLiveWidgetsOptIn(enabled: Boolean)
+    fun reconnectNow()
 }
