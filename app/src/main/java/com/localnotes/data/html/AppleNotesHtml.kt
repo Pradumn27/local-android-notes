@@ -162,21 +162,27 @@ object AppleNotesHtml {
 
     private fun renderParagraph(block: NoteBlock): String {
         val inner = applyMarks(block.text, block.marks).ifBlank { "<br>" }
-        val tag = when (block.type) {
-            BlockType.TITLE -> "h1"
-            BlockType.HEADING -> "h2"
-            BlockType.SUBHEADING -> "h3"
-            BlockType.MONO -> "pre"
-            else -> "div"
+        val sized = when (block.type) {
+            BlockType.TITLE -> wrapSize(inner, 21, bold = true)
+            BlockType.HEADING -> wrapSize(inner, 15, bold = true)
+            BlockType.SUBHEADING -> wrapSize(inner, 13, bold = true)
+            BlockType.MONO -> "<pre>$inner</pre>"
+            else -> wrapSize(inner, 11, bold = false)
         }
-        return "<$tag>$inner</$tag>"
+        return if (block.type == BlockType.MONO) sized else "<div>$sized</div>"
+    }
+
+    private fun wrapSize(inner: String, px: Int, bold: Boolean): String {
+        val span = "<span style=\"font-size: ${px}px\">$inner</span>"
+        return if (bold) "<b>$span</b>" else span
     }
 
     private fun renderList(tag: String, cssClass: String?, items: List<NoteBlock>): String {
         val cls = cssClass?.let { " class=\"$it\"" }.orEmpty()
         val lis = items.joinToString("") { item ->
             val pad = if (item.indent > 0) " data-indent=\"${item.indent}\"" else ""
-            "<li$pad>${applyMarks(item.text, item.marks).ifBlank { "<br>" }}</li>"
+            val body = applyMarks(item.text, item.marks).ifBlank { "<br>" }
+            "<li$pad><span style=\"font-size: 11px\">$body</span></li>"
         }
         return "<$tag$cls>$lis</$tag>"
     }
@@ -185,7 +191,8 @@ object AppleNotesHtml {
         val lis = items.joinToString("") { item ->
             val checked = if (item.checked) " class=\"checked\"" else ""
             val pad = if (item.indent > 0) " data-indent=\"${item.indent}\"" else ""
-            "<li$checked$pad>${applyMarks(item.text, item.marks).ifBlank { "<br>" }}</li>"
+            val body = applyMarks(item.text, item.marks).ifBlank { "<br>" }
+            "<li$checked$pad><span style=\"font-size: 11px\">$body</span></li>"
         }
         return "<ul class=\"Apple-checklist\">$lis</ul>"
     }
@@ -193,13 +200,13 @@ object AppleNotesHtml {
     private fun applyMarks(text: String, marks: List<TextMark>): String {
         if (text.isEmpty()) return ""
         if (marks.isEmpty()) return escape(text)
-        val opens = Array(text.length + 1) { mutableListOf<MarkStyle>() }
-        val closes = Array(text.length + 1) { mutableListOf<MarkStyle>() }
-        marks.filter { it.start < it.end && it.start >= 0 && it.end <= text.length }
-            .forEach { mark ->
-                opens[mark.start] += mark.style
-                closes[mark.end] += mark.style
-            }
+        val valid = marks.filter { it.start < it.end && it.start >= 0 && it.end <= text.length }
+        val opens = Array(text.length + 1) { mutableListOf<TextMark>() }
+        val closes = Array(text.length + 1) { mutableListOf<TextMark>() }
+        valid.forEach { mark ->
+            opens[mark.start] += mark
+            closes[mark.end] += mark
+        }
         return buildString {
             for (i in 0..text.length) {
                 closes[i].asReversed().forEach { append(closeTag(it)) }
@@ -210,21 +217,28 @@ object AppleNotesHtml {
         }
     }
 
-    private fun openTag(style: MarkStyle): String = when (style) {
+    private fun openTag(mark: TextMark): String = when (mark.style) {
         MarkStyle.BOLD -> "<b>"
         MarkStyle.ITALIC -> "<i>"
         MarkStyle.UNDERLINE -> "<u>"
-        MarkStyle.STRIKE -> "<s>"
+        MarkStyle.STRIKE -> "<strike>"
         MarkStyle.HIGHLIGHT -> "<span class=\"Apple-highlight\">"
+        MarkStyle.LINK -> {
+            val href = escapeAttr(mark.href ?: "")
+            "<a href=\"$href\">"
+        }
     }
 
-    private fun closeTag(style: MarkStyle): String = when (style) {
+    private fun closeTag(mark: TextMark): String = when (mark.style) {
         MarkStyle.BOLD -> "</b>"
         MarkStyle.ITALIC -> "</i>"
         MarkStyle.UNDERLINE -> "</u>"
-        MarkStyle.STRIKE -> "</s>"
+        MarkStyle.STRIKE -> "</strike>"
         MarkStyle.HIGHLIGHT -> "</span>"
+        MarkStyle.LINK -> "</a>"
     }
+
+    private fun escapeAttr(text: String): String = escape(text).replace("\"", "&quot;")
 
     private fun escape(text: String): String = text
         .replace("&", "&amp;")
@@ -245,14 +259,20 @@ object AppleNotesHtml {
                     "h2" -> into += paragraphFrom(node, BlockType.HEADING)
                     "h3" -> into += paragraphFrom(node, BlockType.SUBHEADING)
                     "pre" -> into += paragraphFrom(node, BlockType.MONO)
-                    "div", "p", "span" -> {
+                    "div", "p" -> {
                         if (node.children().any { it.tagName() in blockTags }) {
                             node.childNodes().forEach { collectBlocks(it, into) }
                         } else {
                             val text = inlineText(node)
                             if (text.isNotBlank() || node.getElementsByTag("br").isNotEmpty()) {
-                                into += paragraphFrom(node, BlockType.BODY)
+                                into += paragraphFrom(node, inferParagraphType(node))
                             }
+                        }
+                    }
+                    "span" -> {
+                        val text = inlineText(node)
+                        if (text.isNotBlank()) {
+                            into += paragraphFrom(node, inferParagraphType(node))
                         }
                     }
                     "ul" -> {
@@ -268,7 +288,7 @@ object AppleNotesHtml {
                                 text = text,
                                 checked = checked,
                                 indent = li.attr("data-indent").toIntOrNull() ?: 0,
-                                marks = marks,
+                                marks = mergeUrlMarks(text, marks),
                             )
                         }
                     }
@@ -280,7 +300,7 @@ object AppleNotesHtml {
                                 type = BlockType.NUMBERED,
                                 text = text,
                                 indent = li.attr("data-indent").toIntOrNull() ?: 0,
-                                marks = marks,
+                                marks = mergeUrlMarks(text, marks),
                             )
                         }
                     }
@@ -295,7 +315,13 @@ object AppleNotesHtml {
 
     private fun paragraphFrom(element: Element, type: BlockType): NoteBlock {
         val (text, marks) = inlineContent(element)
-        return NoteBlock(newId(), type, text, marks = marks)
+        val heading = type == BlockType.TITLE || type == BlockType.HEADING || type == BlockType.SUBHEADING
+        val cleaned = if (heading) {
+            marks.filterNot { it.style == MarkStyle.BOLD && it.start == 0 && it.end == text.length }
+        } else {
+            marks
+        }
+        return NoteBlock(newId(), type, text, marks = mergeUrlMarks(text, cleaned))
     }
 
     private fun inlineText(element: Element): String = inlineContent(element).first
@@ -303,14 +329,17 @@ object AppleNotesHtml {
     private fun inlineContent(element: Element): Pair<String, List<TextMark>> {
         val text = StringBuilder()
         val marks = mutableListOf<TextMark>()
-        fun walk(node: Node, styles: Set<MarkStyle>) {
+        data class Style(val styles: Set<MarkStyle>, val href: String?)
+        fun walk(node: Node, state: Style) {
             when (node) {
                 is TextNode -> {
                     val piece = node.wholeText.replace('\u00A0', ' ')
                     if (piece.isEmpty()) return
                     val start = text.length
                     text.append(piece)
-                    styles.forEach { marks += TextMark(start, text.length, it) }
+                    state.styles.forEach { style ->
+                        marks += TextMark(start, text.length, style, href = if (style == MarkStyle.LINK) state.href else null)
+                    }
                 }
                 is Element -> {
                     if (node.tagName().equals("br", ignoreCase = true)) {
@@ -318,27 +347,116 @@ object AppleNotesHtml {
                         return
                     }
                     if (node.tagName().equals("input", ignoreCase = true)) return
-                    val next = styles.toMutableSet()
+                    val next = state.styles.toMutableSet()
+                    var href = state.href
                     when (node.tagName().lowercase()) {
                         "b", "strong" -> next += MarkStyle.BOLD
                         "i", "em" -> next += MarkStyle.ITALIC
                         "u" -> next += MarkStyle.UNDERLINE
                         "s", "strike", "del" -> next += MarkStyle.STRIKE
-                        "span" -> if (node.classNames().any { it.contains("highlight", true) } ||
-                            node.attr("style").contains("background", true)
-                        ) {
-                            next += MarkStyle.HIGHLIGHT
+                        "a" -> {
+                            next += MarkStyle.LINK
+                            href = node.attr("href").ifBlank { href }
                         }
                     }
-                    node.childNodes().forEach { walk(it, next) }
+                    next += cssMarks(node.attr("style"), node.classNames())
+                    node.childNodes().forEach { walk(it, Style(next, href)) }
                 }
             }
         }
-        element.childNodes().forEach { walk(it, emptySet()) }
+        element.childNodes().forEach { walk(it, Style(emptySet(), null)) }
         val raw = text.toString().trimEnd('\n')
         if (raw == "<br>" || raw == "\n") return "" to emptyList()
         return raw to marks
     }
 
+    private fun inferParagraphType(element: Element): BlockType {
+        if (isMono(element)) return BlockType.MONO
+        val size = maxFontSize(element) ?: return BlockType.BODY
+        return when {
+            size >= 19f -> BlockType.TITLE
+            size >= 14.5f -> BlockType.HEADING
+            size >= 13f -> BlockType.SUBHEADING
+            else -> BlockType.BODY
+        }
+    }
+
+    private fun maxFontSize(element: Element): Float? {
+        val sizes = mutableListOf<Float>()
+        fontSizePx(element.attr("style"))?.let { sizes += it }
+        element.getAllElements().forEach { child ->
+            fontSizePx(child.attr("style"))?.let { sizes += it }
+        }
+        return sizes.maxOrNull()
+    }
+
+    private fun fontSizePx(style: String): Float? {
+        val match = FONT_SIZE.find(style) ?: return null
+        return match.groupValues[1].toFloatOrNull()
+    }
+
+    private fun isMono(element: Element): Boolean {
+        val family = (element.attr("style") + " " + element.getAllElements().joinToString(" ") { it.attr("style") })
+            .lowercase()
+        return family.contains("menlo") || family.contains("monaco") ||
+            family.contains("courier") || family.contains("monospace") || family.contains("sf mono")
+    }
+
+    private fun cssMarks(style: String, classes: Set<String>): Set<MarkStyle> {
+        val out = mutableSetOf<MarkStyle>()
+        val s = style.lowercase()
+        if (s.contains("font-weight") && (s.contains("bold") || FONT_WEIGHT_BOLD.containsMatchIn(s))) {
+            out += MarkStyle.BOLD
+        }
+        if (s.contains("italic")) out += MarkStyle.ITALIC
+        if (s.contains("underline")) out += MarkStyle.UNDERLINE
+        if (s.contains("line-through")) out += MarkStyle.STRIKE
+        if (s.contains("background") || classes.any { it.contains("highlight", true) }) {
+            out += MarkStyle.HIGHLIGHT
+        }
+        return out
+    }
+
+    private fun mergeUrlMarks(text: String, marks: List<TextMark>): List<TextMark> {
+        val existing = marks.filter { it.style == MarkStyle.LINK }
+        val extras = URL_REGEX.findAll(text).mapNotNull { match ->
+            val start = match.range.first
+            val raw = match.value.trimEnd { it in ".,);]}" }
+            val end = start + raw.length
+            if (existing.any { it.start <= start && it.end >= end }) null
+            else TextMark(start, end, MarkStyle.LINK, href = raw)
+        }
+        return marks + extras
+    }
+
+    fun adjustMarks(marks: List<TextMark>, oldText: String, newText: String): List<TextMark> {
+        if (oldText == newText || marks.isEmpty()) return marks
+        var prefix = 0
+        while (prefix < oldText.length && prefix < newText.length && oldText[prefix] == newText[prefix]) {
+            prefix += 1
+        }
+        val delta = newText.length - oldText.length
+        return marks.mapNotNull { mark ->
+            var start = mark.start
+            var end = mark.end
+            when {
+                end <= prefix -> mark
+                start >= prefix -> {
+                    start += delta
+                    end += delta
+                    if (start in 0 until end && end <= newText.length) mark.copy(start = start, end = end) else null
+                }
+                else -> {
+                    end = (end + delta).coerceAtLeast(start)
+                    if (end <= newText.length && start < end) mark.copy(end = end) else null
+                }
+            }
+        }
+    }
+
     private fun newId(): String = UUID.randomUUID().toString()
+
+    private val FONT_SIZE = Regex("font-size:\\s*([0-9.]+)px", RegexOption.IGNORE_CASE)
+    private val FONT_WEIGHT_BOLD = Regex("font-weight:\\s*([6-9]00|bold)", RegexOption.IGNORE_CASE)
+    private val URL_REGEX = Regex("https?://[^\\s<]+", RegexOption.IGNORE_CASE)
 }

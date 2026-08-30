@@ -36,12 +36,14 @@ enum class MarkStyle {
     UNDERLINE,
     STRIKE,
     HIGHLIGHT,
+    LINK,
 }
 
 data class TextMark(
     val start: Int,
     val end: Int,
     val style: MarkStyle,
+    val href: String? = null,
 )
 
 data class NoteBlock(

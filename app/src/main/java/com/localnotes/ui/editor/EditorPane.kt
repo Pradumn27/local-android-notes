@@ -82,6 +82,8 @@ fun EditorPane(
     var focusedId by remember(note.id) { mutableStateOf(note.blocks.firstOrNull()?.id) }
     var showFormat by remember { mutableStateOf(true) }
     var lastEditAt by remember(note.id) { mutableStateOf(0L) }
+    var selection by remember(note.id) { mutableStateOf(0 to 0) }
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val context = LocalContext.current
     val isTrash = note.deletedAt != null || folderKind == FolderKind.RECENTLY_DELETED
 
@@ -169,20 +171,24 @@ fun EditorPane(
                 readOnly = isTrash,
                 focusedId = focusedId,
                 onFocused = { id -> if (id != null) focusedId = id },
+                onSelection = { start, end -> selection = start to end },
                 onChange = { commit(it) },
             )
             Spacer(Modifier.height(24.dp))
         }
 
         if (showFormat && !isTrash) {
+            val focused = blocks.firstOrNull { it.id == focusedId }
             FormatBar(
-                current = blocks.firstOrNull { it.id == focusedId }?.type ?: BlockType.BODY,
+                current = focused?.type ?: BlockType.BODY,
+                linkHref = linkAt(focused, selection.first)?.href,
                 onStyle = { type ->
                     commit(applyStyle(blocks, focusedId, type))
                 },
                 onMark = { mark ->
-                    commit(toggleMark(blocks, focusedId, mark))
+                    commit(toggleMark(blocks, focusedId, mark, selection.first, selection.second))
                 },
+                onOpenLink = { href -> runCatching { uriHandler.openUri(href) } },
                 onChecklist = {
                     val (next, id) = insertChecklist(blocks, focusedId)
                     focusedId = id

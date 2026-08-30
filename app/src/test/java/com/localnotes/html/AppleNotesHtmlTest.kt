@@ -17,9 +17,9 @@ class AppleNotesHtmlTest {
             NoteBlock("3", BlockType.BULLET, "Learn about taxes"),
         )
         val html = AppleNotesHtml.encode(blocks).html
-        assertTrue(html.contains("<h1>What all to do:</h1>"))
+        assertTrue(html.contains("font-size: 21px"))
         assertTrue(html.contains("class=\"Apple-dash-list\""))
-        assertTrue(html.contains("<li>Learncpp</li>"))
+        assertTrue(html.contains("Learncpp"))
     }
 
     @Test
@@ -64,6 +64,23 @@ class AppleNotesHtmlTest {
     fun previewSkipsTitle() {
         val preview = AppleNotesHtml.preview("Hello\nWorld of notes", "Hello")
         assertEquals("World of notes", preview)
+    }
+
+    @Test
+    fun infersAppleHeadingSizesAndUnderline() {
+        val html = """
+            <div><b><span style="font-size: 21px">Nice</span></b></div>
+            <div><b><span style="font-size: 15px">On this phone</span></b></div>
+            <div><u><span style="font-size: 11px">underlined bit</span></u></div>
+            <div><span style="font-size: 11px">see https://example.com/path for more</span></div>
+        """.trimIndent()
+        val blocks = AppleNotesHtml.decode(html)
+        assertEquals(BlockType.TITLE, blocks[0].type)
+        assertEquals("Nice", blocks[0].text)
+        assertEquals(BlockType.HEADING, blocks[1].type)
+        assertEquals("On this phone", blocks[1].text)
+        assertTrue(blocks[2].marks.any { it.style == com.localnotes.data.model.MarkStyle.UNDERLINE })
+        assertTrue(blocks[3].marks.any { it.style == com.localnotes.data.model.MarkStyle.LINK && it.href?.contains("example.com") == true })
     }
 
     @Test

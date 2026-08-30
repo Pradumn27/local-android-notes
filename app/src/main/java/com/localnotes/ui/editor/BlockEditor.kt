@@ -35,6 +35,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -45,10 +46,10 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.localnotes.data.html.AppleNotesHtml
 import com.localnotes.data.model.BlockType
 import com.localnotes.data.model.MarkStyle
 import com.localnotes.data.model.NoteBlock
-import com.localnotes.data.model.TextMark
 import com.localnotes.ui.theme.LocalNotesColors
 import com.localnotes.ui.theme.NotesTypography
 import java.util.UUID
@@ -59,6 +60,7 @@ fun BlockEditor(
     readOnly: Boolean,
     focusedId: String?,
     onFocused: (String?) -> Unit,
+    onSelection: (Int, Int) -> Unit = { _, _ -> },
     onChange: (List<NoteBlock>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -73,13 +75,19 @@ fun BlockEditor(
                 requestFocus = focusedId == block.id,
                 onFocused = { onFocused(if (it) block.id else null) },
                 onText = { value ->
-                    onChange(blocks.update(index) { it.copy(text = value) })
+                    onChange(blocks.update(index) {
+                        it.copy(text = value, marks = AppleNotesHtml.adjustMarks(it.marks, it.text, value))
+                    })
                 },
+                onSelection = onSelection,
                 onChecked = { checked ->
                     onChange(blocks.update(index) { it.copy(checked = checked) })
                 },
                 onSplit = { before, after ->
-                    val first = block.copy(text = before)
+                    val first = block.copy(
+                        text = before,
+                        marks = AppleNotesHtml.adjustMarks(block.marks, block.text, before),
+                    )
                     val second = NoteBlock(
                         id = UUID.randomUUID().toString(),
                         type = if (block.type == BlockType.TITLE) BlockType.BODY else block.type,
@@ -122,6 +130,7 @@ private fun BlockRow(
     requestFocus: Boolean,
     onFocused: (Boolean) -> Unit,
     onText: (String) -> Unit,
+    onSelection: (Int, Int) -> Unit,
     onChecked: (Boolean) -> Unit,
     onSplit: (String, String) -> Unit,
     onBackspaceEmpty: () -> Unit,
@@ -146,6 +155,9 @@ private fun BlockRow(
         color = if (block.type == BlockType.CHECKLIST && block.checked) colors.secondary else colors.label,
         textDecoration = if (block.checked) TextDecoration.LineThrough else TextDecoration.None,
     )
+    val annotated = remember(block.text, block.marks, block.checked, colors.isDark) {
+        block.toAnnotated(style, colors)
+    }
 
     Row(
         modifier = Modifier
@@ -190,12 +202,10 @@ private fun BlockRow(
         }
 
         Box(Modifier.weight(1f)) {
-            if (value.text.isEmpty()) {
-                Text(placeholder(block.type, index), style = style.copy(color = colors.tertiary))
-            }
             BasicTextField(
                 value = value,
                 onValueChange = { next ->
+                    onSelection(next.selection.start, next.selection.end)
                     val newline = next.text.indexOf('\n')
                     if (newline >= 0) {
                         val before = next.text.substring(0, newline)
@@ -208,13 +218,16 @@ private fun BlockRow(
                     }
                 },
                 readOnly = readOnly,
-                textStyle = style,
+                textStyle = style.copy(color = Color.Transparent),
                 cursorBrush = SolidColor(colors.gold),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester)
-                    .onFocusChanged { onFocused(it.isFocused) }
+                    .onFocusChanged {
+                        onFocused(it.isFocused)
+                        if (it.isFocused) onSelection(value.selection.start, value.selection.end)
+                    }
                     .onPreviewKeyEvent { event ->
                         if (event.type == KeyEventType.KeyDown &&
                             event.key == Key.Backspace &&
@@ -226,6 +239,16 @@ private fun BlockRow(
                             false
                         }
                     },
+                decorationBox = { inner ->
+                    Box {
+                        if (value.text.isEmpty()) {
+                            Text(placeholder(block.type, index), style = style.copy(color = colors.tertiary))
+                        } else {
+                            Text(text = annotated, style = style)
+                        }
+                        inner()
+                    }
+                },
             )
         }
     }
@@ -235,20 +258,6 @@ fun applyStyle(blocks: List<NoteBlock>, focusedId: String?, type: BlockType): Li
     if (focusedId == null) return blocks
     return blocks.map { block ->
         if (block.id == focusedId) block.copy(type = type) else block
-    }
-}
-
-fun toggleMark(blocks: List<NoteBlock>, focusedId: String?, style: MarkStyle): List<NoteBlock> {
-    if (focusedId == null) return blocks
-    return blocks.map { block ->
-        if (block.id != focusedId || block.text.isEmpty()) return@map block
-        val existing = block.marks.any { it.style == style && it.start == 0 && it.end == block.text.length }
-        val marks = if (existing) {
-            block.marks.filterNot { it.style == style && it.start == 0 && it.end == block.text.length }
-        } else {
-            block.marks + TextMark(0, block.text.length, style)
-        }
-        block.copy(marks = marks)
     }
 }
 
@@ -304,8 +313,10 @@ private fun numberFor(blocks: List<NoteBlock>, index: Int): Int {
 @Composable
 fun FormatBar(
     current: BlockType?,
+    linkHref: String? = null,
     onStyle: (BlockType) -> Unit,
     onMark: (MarkStyle) -> Unit,
+    onOpenLink: (String) -> Unit = {},
     onChecklist: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -332,6 +343,10 @@ fun FormatBar(
             FormatChip("I", false, italic = true) { onMark(MarkStyle.ITALIC) }
             FormatChip("U", false, underline = true) { onMark(MarkStyle.UNDERLINE) }
             FormatChip("S", false, strike = true) { onMark(MarkStyle.STRIKE) }
+            FormatChip("Link", false) { onMark(MarkStyle.LINK) }
+            if (!linkHref.isNullOrBlank()) {
+                FormatChip("Open", false) { onOpenLink(linkHref) }
+            }
         }
     }
 }
