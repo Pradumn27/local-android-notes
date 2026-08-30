@@ -98,7 +98,13 @@ class SyncEngine(
             repository.markNoteSynced(note.id, note.appleId)
             return note.appleId
         }
-        val (appleId, modifiedAt) = api.upsertNote(note.appleId, folderAppleId, note.html)
+        val outgoing = if (note.appleId != null) {
+            val current = runCatching { api.getNote(note.appleId) }.getOrNull()
+            com.localnotes.data.html.AppleNotesHtml.preserveNoteLinks(note.html, current?.html)
+        } else {
+            note.html
+        }
+        val (appleId, modifiedAt) = api.upsertNote(note.appleId, folderAppleId, outgoing)
         repository.markNoteSynced(note.id, appleId, modifiedAt.takeIf { it > 0 })
         return appleId
     }

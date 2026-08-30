@@ -269,9 +269,15 @@ object AppleNotesHtml {
             val bg = mark.highlight ?: "#FFF2A8"
             "<span class=\"Apple-highlight\" style=\"background-color: $bg\">"
         }
-        MarkStyle.LINK, MarkStyle.NOTE_LINK -> {
+        MarkStyle.LINK -> {
+            // Notes.app strips <a href> and leaves only underlined text, so
+            // never write anchors. The URL stays in the visible text.
+            "<span class=\"Apple-link\">"
+        }
+        MarkStyle.NOTE_LINK -> {
             val href = escapeAttr(mark.href ?: "")
-            "<a href=\"$href\">"
+            if (href.isBlank()) "<span class=\"Apple-note-link\">"
+            else "<span class=\"Apple-note-link\" data-href=\"$href\">"
         }
         MarkStyle.COLOR -> "<span style=\"color: ${mark.color ?: "#000000"}\">"
         MarkStyle.FONT_SIZE -> "<span style=\"font-size: ${mark.fontSizePx ?: 11f}px\">"
@@ -284,8 +290,9 @@ object AppleNotesHtml {
         MarkStyle.ITALIC -> "</i>"
         MarkStyle.UNDERLINE -> "</u>"
         MarkStyle.STRIKE -> "</strike>"
-        MarkStyle.HIGHLIGHT, MarkStyle.COLOR, MarkStyle.FONT_SIZE, MarkStyle.TAG, MarkStyle.MENTION -> "</span>"
-        MarkStyle.LINK, MarkStyle.NOTE_LINK -> "</a>"
+        MarkStyle.HIGHLIGHT, MarkStyle.COLOR, MarkStyle.FONT_SIZE, MarkStyle.TAG,
+        MarkStyle.MENTION, MarkStyle.LINK, MarkStyle.NOTE_LINK,
+        -> "</span>"
     }
 
     private fun escapeAttr(text: String): String = escape(text).replace("\"", "&quot;")
@@ -367,10 +374,17 @@ object AppleNotesHtml {
                     "table" -> into += tableFrom(node)
                     "img" -> mediaFrom(node, "src", node.attr("alt"))?.let { into += it }
                     "audio", "video" -> mediaFrom(node, "src", node.attr("type").ifBlank { node.tagName() })?.let { into += it }
-                    "object", "embed" -> mediaFrom(node, "data", node.attr("type").ifBlank { node.attr("name") })?.let { into += it }
+                    "object", "embed" -> {
+                        val src = node.attr("data").ifBlank { node.attr("src") }
+                        if (isNoteHref(src)) {
+                            into += paragraphFrom(node, inferParagraphType(node))
+                        } else {
+                            mediaFrom(node, "data", node.attr("type").ifBlank { node.attr("name") })?.let { into += it }
+                        }
+                    }
                     "a" -> {
                         val href = node.attr("href")
-                        if (isFileHref(href) || node.hasAttr("download")) {
+                        if (!isNoteHref(href) && (isFileHref(href) || node.hasAttr("download"))) {
                             into += fileFromAnchor(node)
                         } else {
                             into += paragraphFrom(node, inferParagraphType(node))
@@ -453,14 +467,17 @@ object AppleNotesHtml {
             }
         }
         element.selectFirst("object[data], embed[src], embed[data]")?.let { obj ->
-            val attr = if (obj.hasAttr("data")) "data" else "src"
-            return mediaFrom(obj, attr, obj.attr("type").ifBlank { obj.attr("name") })
+            val src = obj.attr("data").ifBlank { obj.attr("src") }
+            if (!isNoteHref(src)) {
+                val attr = if (obj.hasAttr("data")) "data" else "src"
+                return mediaFrom(obj, attr, obj.attr("type").ifBlank { obj.attr("name") })
+            }
         }
         val anchor = element.selectFirst("a[href]")
         if (anchor != null) {
             val href = anchor.attr("href")
             val label = inlineText(element)
-            if (isFileHref(href) || (anchor.hasAttr("download") && (label.isBlank() || label == anchor.text()))) {
+            if (!isNoteHref(href) && (isFileHref(href) || (anchor.hasAttr("download") && (label.isBlank() || label == anchor.text())))) {
                 return fileFromAnchor(anchor)
             }
         }
@@ -639,19 +656,23 @@ object AppleNotesHtml {
                     var color = state.color
                     var highlight = state.highlight
                     var fontSize = state.fontSize
+                    val dataHref = node.attr("data-href").ifBlank { node.attr("href") }
+                    if (node.classNames().any { it.contains("note-link", true) } || isNoteHref(dataHref)) {
+                        next += MarkStyle.NOTE_LINK
+                        href = dataHref.ifBlank { href }
+                    } else if (node.classNames().any { it.contains("apple-link", true) && !it.contains("note", true) }) {
+                        next += MarkStyle.LINK
+                        href = dataHref.ifBlank { href }
+                    }
                     when (node.tagName().lowercase()) {
                         "b", "strong" -> next += MarkStyle.BOLD
                         "i", "em" -> next += MarkStyle.ITALIC
                         "u" -> next += MarkStyle.UNDERLINE
                         "s", "strike", "del" -> next += MarkStyle.STRIKE
-                        "a" -> {
-                            href = node.attr("href").ifBlank { href }
-                            val link = href.orEmpty()
-                            next += if (link.startsWith("notes:") || link.startsWith("x-coredata:") || link.startsWith(">>")) {
-                                MarkStyle.NOTE_LINK
-                            } else {
-                                MarkStyle.LINK
-                            }
+                        "a", "object", "embed" -> {
+                            val link = node.attr("href").ifBlank { node.attr("data") }.ifBlank { dataHref }
+                            if (link.isNotBlank()) href = link
+                            next += if (isNoteHref(link)) MarkStyle.NOTE_LINK else MarkStyle.LINK
                         }
                     }
                     val css = cssMarks(node.attr("style"), node.classNames())
@@ -767,6 +788,82 @@ object AppleNotesHtml {
             extras += TextMark(match.range.first, match.range.last + 1, MarkStyle.NOTE_LINK, href = "notes://$title")
         }
         return marks + extras
+    }
+
+    fun isNoteHref(href: String?): Boolean {
+        if (href.isNullOrBlank()) return false
+        val value = href.trim()
+        val lower = value.lowercase()
+        return lower.startsWith("notes:") ||
+            lower.startsWith("applenotes:") ||
+            lower.startsWith("mobilenotes:") ||
+            lower.startsWith(">>") ||
+            (lower.startsWith("x-coredata:") && (lower.contains("/icnote/") || lower.contains("/icattachment/")))
+    }
+
+    data class NoteTarget(
+        val id: String,
+        val appleId: String?,
+        val title: String,
+    )
+
+    fun linkRelatedNotes(blocks: List<NoteBlock>, targets: List<NoteTarget>): List<NoteBlock> {
+        val usable = targets
+            .map { it.copy(title = it.title.trim()) }
+            .filter { it.title.length >= 3 }
+            .sortedByDescending { it.title.length }
+        if (usable.isEmpty()) return blocks
+        return blocks.map { block ->
+            if (block.type == BlockType.TABLE || block.type == BlockType.IMAGE ||
+                block.type == BlockType.AUDIO || block.type == BlockType.FILE ||
+                block.type == BlockType.DIVIDER || block.text.isBlank()
+            ) {
+                return@map block
+            }
+            val extras = mutableListOf<TextMark>()
+            val existing = block.marks.filter { it.style == MarkStyle.NOTE_LINK }
+            for (target in usable) {
+                val href = target.appleId?.takeIf { it.isNotBlank() } ?: "notes://${target.title}"
+                val patterns = listOf(">> ${target.title}", ">>${target.title}", target.title)
+                for (pattern in patterns) {
+                    var from = 0
+                    while (from <= block.text.length - pattern.length) {
+                        val at = block.text.indexOf(pattern, from, ignoreCase = true)
+                        if (at < 0) break
+                        val end = at + pattern.length
+                        val isolated = pattern.startsWith(">>") ||
+                            (block.text.trim().equals(pattern, ignoreCase = true))
+                        if (isolated && existing.none { it.start <= at && it.end >= end }) {
+                            extras += TextMark(at, end, MarkStyle.NOTE_LINK, href = href)
+                        }
+                        from = end
+                    }
+                }
+            }
+            if (extras.isEmpty()) block else block.copy(marks = block.marks + extras)
+        }
+    }
+
+    fun preserveNoteLinks(outgoing: String, incoming: String?): String {
+        if (incoming.isNullOrBlank()) return outgoing
+        val keep = decode(incoming).flatMap { block ->
+            block.marks.filter { it.style == MarkStyle.NOTE_LINK && !it.href.isNullOrBlank() }
+                .map { mark ->
+                    val label = block.text.substring(mark.start, mark.end.coerceAtMost(block.text.length)).trim()
+                    mark.href.orEmpty() to label.ifBlank { mark.href.orEmpty() }
+                }
+        }.distinctBy { it.first }
+        if (keep.isEmpty()) return outgoing
+        val have = decode(outgoing).flatMap { block ->
+            block.marks.filter { it.style == MarkStyle.NOTE_LINK }.mapNotNull { it.href }
+        }.toSet()
+        val missing = keep.filter { it.first !in have }
+        if (missing.isEmpty()) return outgoing
+        val extra = missing.joinToString("") { (href, label) ->
+            val shown = if (label.startsWith(">>")) label else ">> $label"
+            """<div><span class="Apple-note-link" data-href="${escapeAttr(href)}">${escape(shown)}</span></div>"""
+        }
+        return outgoing + extra
     }
 
     fun adjustMarks(marks: List<TextMark>, oldText: String, newText: String): List<TextMark> {

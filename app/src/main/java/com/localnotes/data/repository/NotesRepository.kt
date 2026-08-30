@@ -28,7 +28,9 @@ class NotesRepository(private val db: NotesDatabase) {
     }
 
     fun observeNote(id: String): Flow<NoteDetail?> =
-        db.notes().observeById(id).map { it?.toDetail() }
+        combine(db.notes().observeById(id), notes) { entity, all ->
+            entity?.toDetail(noteTargets(all, exceptId = entity.id))
+        }
 
     fun observeSummaries(
         folderId: String,
@@ -190,8 +192,18 @@ class NotesRepository(private val db: NotesDatabase) {
         if (raw.startsWith("x-coredata:")) {
             return all.find { it.appleId == raw }
         }
-        val title = raw.removePrefix("notes://").removePrefix(">>").trim()
-        if (title.isBlank()) return null
+        val identifier = Regex("(?:applenotes|notes|mobilenotes):(?://showNote\\?identifier=|//note/|note/)([^\\s&]+)", RegexOption.IGNORE_CASE)
+            .find(raw)?.groupValues?.get(1)
+        if (identifier != null) {
+            all.find { it.appleId?.endsWith(identifier) == true || it.appleId?.contains(identifier) == true }?.let { return it }
+        }
+        val title = when {
+            raw.startsWith(">>") -> raw.removePrefix(">>").trim()
+            raw.startsWith("notes://") && !raw.contains("identifier=", ignoreCase = true) ->
+                raw.removePrefix("notes://").trim()
+            else -> ""
+        }
+        if (title.isBlank() || title.contains("://")) return null
         return all.find { it.title.equals(title, ignoreCase = true) }
             ?: all.find { title.length >= 3 && it.title.contains(title, ignoreCase = true) }
     }
@@ -401,13 +413,20 @@ private fun NoteEntity.toSummary(): NoteSummary = NoteSummary(
     dirty = dirty,
 )
 
-private fun NoteEntity.toDetail(): NoteDetail = NoteDetail(
+private fun noteTargets(all: List<NoteEntity>, exceptId: String): List<AppleNotesHtml.NoteTarget> {
+    return all.filter { it.deletedAt == null && it.id != exceptId && it.title.isNotBlank() }
+        .map { AppleNotesHtml.NoteTarget(id = it.id, appleId = it.appleId, title = it.title) }
+}
+
+private fun NoteEntity.toDetail(
+    targets: List<AppleNotesHtml.NoteTarget> = emptyList(),
+): NoteDetail = NoteDetail(
     id = id,
     folderId = folderId,
     title = title,
     plaintext = plaintext,
     html = html,
-    blocks = AppleNotesHtml.decode(html),
+    blocks = AppleNotesHtml.linkRelatedNotes(AppleNotesHtml.decode(html), targets),
     createdAt = createdAt,
     modifiedAt = modifiedAt,
     pinned = pinned,

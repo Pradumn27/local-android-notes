@@ -214,6 +214,74 @@ class AppleNotesHtmlTest {
     }
 
     @Test
+    fun noteLinksSurviveWithoutAnchorTags() {
+        val original = listOf(
+            NoteBlock("1", BlockType.TITLE, "Hub"),
+            NoteBlock(
+                "2",
+                BlockType.BODY,
+                ">> MAC",
+                marks = listOf(
+                    com.localnotes.data.model.TextMark(
+                        0,
+                        6,
+                        com.localnotes.data.model.MarkStyle.NOTE_LINK,
+                        href = "x-coredata://abc/ICNote/p1",
+                    ),
+                ),
+            ),
+        )
+        val html = AppleNotesHtml.encode(original).html
+        assertTrue(!html.contains("<a "))
+        assertTrue(html.contains("Apple-note-link"))
+        assertTrue(html.contains("x-coredata://abc/ICNote/p1"))
+        val decoded = AppleNotesHtml.decode(html)
+        assertTrue(decoded.any { block ->
+            block.marks.any {
+                it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK &&
+                    it.href?.contains("x-coredata://") == true
+            }
+        })
+    }
+
+    @Test
+    fun decodesAppleNoteHrefsAndDoubleArrow() {
+        val html = """
+            <div><a href="x-coredata://abc/ICNote/p9">Things to buy</a></div>
+            <div><span class="Apple-note-link" data-href="applenotes:note/xyz">MAC</span></div>
+            <div>&gt;&gt; Groceries</div>
+        """.trimIndent()
+        val blocks = AppleNotesHtml.decode(html)
+        assertTrue(blocks.any { block ->
+            block.text.contains("Things to buy") &&
+                block.marks.any { it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK && it.href?.contains("x-coredata") == true }
+        })
+        assertTrue(blocks.any { block ->
+            block.text.contains("MAC") &&
+                block.marks.any { it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK && it.href?.contains("applenotes") == true }
+        })
+        assertTrue(blocks.any { block ->
+            block.text.contains("Groceries") &&
+                block.marks.any { it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK }
+        })
+    }
+
+    @Test
+    fun linkRelatedNotesMarksExactTitles() {
+        val blocks = listOf(
+            NoteBlock("1", BlockType.TITLE, "Inbox"),
+            NoteBlock("2", BlockType.BODY, "MAC"),
+            NoteBlock("3", BlockType.BODY, "See the MAC settings later"),
+        )
+        val linked = AppleNotesHtml.linkRelatedNotes(
+            blocks,
+            listOf(AppleNotesHtml.NoteTarget("n1", "x-coredata://abc/ICNote/p1", "MAC")),
+        )
+        assertTrue(linked[1].marks.any { it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK && it.href?.contains("x-coredata") == true })
+        assertTrue(linked[2].marks.none { it.style == com.localnotes.data.model.MarkStyle.NOTE_LINK })
+    }
+
+    @Test
     fun mixedFontSizeDoesNotPromoteWholeParagraph() {
         val html = """
             <div><b><span style="font-size: 21px">Nice</span></b></div>
